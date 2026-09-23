@@ -204,6 +204,12 @@ a { color: var(--navy-600); }
 .admin-link strong { display: block; font-size: 14.5px; }
 .admin-link small { color: var(--ink-3); font-size: 13px; }
 .admin-link .chev { margin-left: auto; color: var(--ink-3); }
+.setup-warn {
+  display: flex; gap: 12px; margin-top: 16px; padding: 14px 16px; border-radius: 14px;
+  background: var(--warn-bg); color: #5c3b00; border: 1px solid #f0d49a; font-size: 13.5px;
+}
+.setup-warn svg { width: 20px; height: 20px; flex: none; color: var(--warn); margin-top: 1px; }
+.setup-warn strong { display: block; margin-bottom: 2px; }
 .notice-free { margin-top: 20px; font-size: 12.5px; color: var(--ink-3); text-align: center; }
 
 /* ---------- Estrutura do app ---------- */

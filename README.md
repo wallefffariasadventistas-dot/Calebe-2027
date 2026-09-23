@@ -11,7 +11,21 @@ npm start          # http://localhost:3000
 npm test           # testes da API
 ```
 
-Variáveis opcionais: `PORT` (padrão `3000`) e `DATA_DIR` (padrão `./data`). Os dados ficam em `data/db.json`. Faça backup desse arquivo.
+Variáveis opcionais: `PORT` (padrão `3000`) e `DATA_DIR` (padrão `./data`). Localmente, os dados ficam em `data/db.json`. Faça backup desse arquivo.
+
+## Publicação no Vercel
+
+No Vercel o disco não guarda arquivos, por isso os dados ficam num banco **Upstash Redis** (há plano gratuito).
+
+1. No painel do Vercel, abra o projeto e vá em **Storage** (ou **Integrations → Marketplace**).
+2. Escolha **Upstash → Redis**, crie o banco e conecte-o a este projeto (todos os ambientes).
+   Isso cria automaticamente as variáveis `KV_REST_API_URL` e `KV_REST_API_TOKEN`
+   (ou `UPSTASH_REDIS_REST_URL` e `UPSTASH_REDIS_REST_TOKEN`; as duas formas funcionam).
+3. Em **Deployments**, faça um **Redeploy** para aplicar as variáveis.
+
+Sem o banco configurado, o site abre normalmente, mas mostra o aviso "Banco de dados não configurado" e não salva cadastros.
+
+O `vercel.json` já define `public/` como pasta do site e envia todas as rotas `/api/*` para a função `api/index.js`.
 
 ## Funcionalidades
 
@@ -42,7 +56,11 @@ As alterações são salvas automaticamente. O progresso de cada etapa aparece e
 ## Estrutura
 
 ```
-server.js          API REST + servidor de arquivos estáticos (Node puro)
+server.js          Servidor local (npm start)
+api/index.js       Função serverless do Vercel
+lib/api.js         Rotas da API (compartilhadas entre local e Vercel)
+lib/storage.js     Armazenamento: Upstash Redis ou arquivo JSON local
+vercel.json        Configuração do Vercel
 public/            Interface (HTML, CSS e JavaScript sem framework)
 test/              Testes da API (node --test)
 ```

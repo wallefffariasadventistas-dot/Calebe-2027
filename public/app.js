@@ -429,10 +429,12 @@ function renderAuth(mode = 'entrar') {
           <span class="chev">${icon('chev', 'style="width:18px;height:18px"')}</span>
         </button>
         <p class="notice-free">Acesso sem senha nesta fase do projeto.</p>
+        <div id="storageWarn"></div>
       </div>
     </section>
   </div>`;
 
+  checkStorage();
   $$('input[name="mode"]').forEach((r) => r.addEventListener('change', () => { location.hash = `#/${r.value}`; }));
   $$('[data-phone]').forEach(bindPhoneMask);
   $('[data-admin]').onclick = () => { setSession({ kind: 'admin' }); location.hash = '#/admin/geral'; };
@@ -455,6 +457,17 @@ function renderAuth(mode = 'entrar') {
       btn.disabled = false;
     }
   });
+}
+
+async function checkStorage() {
+  try {
+    const health = await api('/health');
+    const box = $('#storageWarn');
+    if (!health.ok && box) {
+      box.innerHTML = `<div class="setup-warn">${icon('alert')}<div><strong>Banco de dados não configurado</strong>
+        <p>Os cadastros ainda não podem ser salvos. No painel do Vercel, adicione a integração <b>Upstash Redis</b> a este projeto e faça um novo deploy.</p></div></div>`;
+    }
+  } catch { /* sem conexão: os erros aparecem ao enviar o formulário */ }
 }
 
 function bindPhoneMask(input) {
