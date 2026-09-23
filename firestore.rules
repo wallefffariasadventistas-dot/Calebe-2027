@@ -1,0 +1,16 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Acesso sem senha nesta fase do projeto: o site lê e grava
+    // cadastros de pastores/líderes e equipes do Calebe 2027.
+    match /calebe_usuarios/{id} {
+      allow read, write: if true;
+    }
+
+    match /calebe_equipes/{id} {
+      allow read, write: if true;
+    }
+  }
+}

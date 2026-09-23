@@ -1,17 +1,31 @@
 # Calebe 2027 — Sistema de Acompanhamento
 
-Aplicação web para acompanhar as equipes do **Calebe 2027**: pastores e líderes cadastram suas equipes e preenchem cada etapa; o administrador acompanha tudo consolidado automaticamente.
+Site para acompanhar as equipes do **Calebe 2027**: pastores e líderes cadastram suas equipes e preenchem cada etapa; o administrador acompanha tudo consolidado automaticamente.
 
-## Como executar
+Site estático (HTML, CSS e JavaScript) com banco de dados **Firebase Firestore**, publicado no **Vercel**.
 
-Requer apenas **Node.js 18+** (sem dependências externas).
+## Estrutura
 
-```bash
-npm start          # http://localhost:3000
-npm test           # testes da API
+```
+index.html              Página do sistema
+css/styles.css          Visual
+js/app.js               Telas e regras do sistema
+js/firebase-config.js   Configuração do projeto Firebase
+assets/                 Ícone
+firestore.rules         Regras do banco (Firestore)
+firebase.json           Configuração do Firebase
+vercel.json             Configuração do Vercel
 ```
 
-Variáveis opcionais: `PORT` (padrão `3000`) e `DATA_DIR` (padrão `./data`). Os dados ficam em `data/db.json`. Faça backup desse arquivo.
+## Configurar o Firebase (uma vez)
+
+1. Em https://console.firebase.google.com crie o projeto (ex.: `calebe-2027`).
+2. **Firestore Database → Criar banco de dados** (modo produção, região `southamerica-east1`).
+3. **Firestore → Regras**: cole o conteúdo de `firestore.rules` e publique.
+4. **Configurações do projeto → Seus apps → Web (`</>`)**: registre o app e copie o `firebaseConfig`.
+5. Cole esses valores em `js/firebase-config.js`.
+
+Enquanto o arquivo não for preenchido, o site abre normalmente e mostra o aviso "Firebase não configurado".
 
 ## Funcionalidades
 
@@ -39,12 +53,4 @@ As alterações são salvas automaticamente. O progresso de cada etapa aparece e
 - **Ações**: linha do tempo de Sopões, Mutirões e Feiras de Saúde, com alerta para datas fora do mês previsto.
 - Filtro por distrito, busca e **exportação para planilha (CSV)**.
 
-## Estrutura
-
-```
-server.js          API REST + servidor de arquivos estáticos (Node puro)
-public/            Interface (HTML, CSS e JavaScript sem framework)
-test/              Testes da API (node --test)
-```
-
-> Observação: como o acesso é sem senha, a Área do Administrador fica aberta a quem acessar o sistema. Antes de publicar, adicione autenticação.
+> Observação: como o acesso é sem senha, as regras do Firestore permitem leitura e escrita nas coleções do Calebe e a Área do Administrador fica aberta a quem acessar o site. Antes de divulgar amplamente, adicione autenticação.
