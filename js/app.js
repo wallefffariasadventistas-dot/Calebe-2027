@@ -194,7 +194,6 @@ function fail(message) { return new Error(message); }
 
 // Traduz erros do Firebase para mensagens claras
 async function guard(fn) {
-  if (!firebaseReady) throw fail('Firebase não configurado. Preencha js/firebase-config.js com os dados do projeto.');
   try {
     return await fn();
   } catch (err) {
@@ -578,8 +577,8 @@ function renderAuth(mode = 'entrar') {
 function checkStorage() {
   const box = $('#storageWarn');
   if (!firebaseReady && box) {
-    box.innerHTML = `<div class="setup-warn">${icon('alert')}<div><strong>Firebase não configurado</strong>
-      <p>Os cadastros ainda não podem ser salvos. Preencha o arquivo <b>js/firebase-config.js</b> com os dados do projeto Firebase.</p></div></div>`;
+    box.innerHTML = `<div class="setup-warn">${icon('alert')}<div><strong>Modo local (teste)</strong>
+      <p>O banco de dados ainda não foi conectado. Os cadastros ficam salvos apenas neste navegador e aparecem só neste aparelho.</p></div></div>`;
   }
 }
 
@@ -1017,6 +1016,7 @@ async function renderAdmin(tab = 'geral', force = false) {
         <div class="eyebrow">Área do administrador</div>
         <h1 class="page-title">Acompanhamento Calebe 2027</h1>
         <p class="page-sub">Dados consolidados automaticamente a partir de todas as equipes cadastradas.</p>
+        ${firebaseReady ? '' : '<span class="badge warn" style="margin-top:10px">Modo local: dados apenas deste navegador</span>'}
       </div>
       <div style="display:flex;gap:10px;flex-wrap:wrap">
         <button class="btn btn-ghost" data-refresh>${icon('refresh')}Atualizar</button>
