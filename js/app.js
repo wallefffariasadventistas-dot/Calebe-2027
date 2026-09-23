@@ -1,8 +1,11 @@
-'use strict';
-
 /* =========================================================
-   Calebe 2027 — Sistema de Acompanhamento (frontend)
+   Calebe 2027 — Sistema de Acompanhamento
+   Site estático + Firebase Firestore
    ========================================================= */
+
+import {
+  db, firebaseReady, collection, doc, addDoc, setDoc, getDoc, getDocs, deleteDoc, query, where,
+} from './firebase-config.js';
 
 // ---------- Configuração ----------
 
@@ -170,21 +173,135 @@ let session = store.get('calebe.session'); // { kind: 'user', user } | { kind: '
 
 function setSession(s) {
   session = s;
+  if (!s) sessionChecked = false;
   store.set('calebe.session', s);
 }
 
-async function api(path, { method = 'GET', body } = {}) {
-  const headers = { 'Content-Type': 'application/json' };
-  if (session && session.kind === 'user') headers['X-User-Id'] = session.user.id;
-  const res = await fetch(`/api${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
-  const data = await res.json().catch(() => ({}));
-  if (res.status === 401 && session && session.kind === 'user') {
-    setSession(null);
-    location.hash = '#/entrar';
+// ---------- Dados (Firestore) ----------
+
+const USERS = 'calebe_usuarios';
+const TEAMS = 'calebe_equipes';
+
+const clean = (v, max = 160) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+const onlyDigits = (v) => String(v || '').replace(/\D/g, '');
+const cleanDate = (v) => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : '');
+const cleanInt = (v) => {
+  const n = Math.floor(Number(v));
+  return Number.isFinite(n) && n >= 0 ? Math.min(n, 1000000) : 0;
+};
+
+function fail(message) { return new Error(message); }
+
+// Traduz erros do Firebase para mensagens claras
+async function guard(fn) {
+  if (!firebaseReady) throw fail('Firebase não configurado. Preencha js/firebase-config.js com os dados do projeto.');
+  try {
+    return await fn();
+  } catch (err) {
+    if (err && err.code === 'permission-denied') throw fail('Sem permissão no banco de dados. Verifique as regras do Firestore.');
+    if (err && err.code === 'unavailable') throw fail('Sem conexão com o banco de dados. Verifique sua internet.');
+    throw err instanceof Error && !err.code ? err : fail('Não foi possível concluir a operação. Tente novamente.');
   }
-  if (!res.ok) throw new Error(data.error || 'Não foi possível concluir a operação.');
-  return data;
 }
+
+const withId = (snap) => ({ id: snap.id, ...snap.data() });
+const byCreated = (a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
+
+function sanitizeTeam(t) {
+  return {
+    name: clean(t.name, 120),
+    church: clean(t.church, 120),
+    district: clean(t.district, 120),
+    members: (t.members || []).slice(0, 500)
+      .map((m) => ({ name: clean(m.name, 120), phone: clean(m.phone, 30) }))
+      .filter((m) => m.name),
+    responsaveis: Object.fromEntries(RESPONSAVEIS.map((r) => [r.key, clean(t.responsaveis?.[r.key], 120)])),
+    treinamentos: Object.fromEntries(TREINAMENTOS.map((m) => [m.key, {
+      done: t.treinamentos?.[m.key]?.done === true, date: cleanDate(t.treinamentos?.[m.key]?.date),
+    }])),
+    local: clean(t.local, 600),
+    divulgacao: Object.fromEntries(DIVULGACAO.map((d) => [d.key, {
+      use: t.divulgacao?.[d.key]?.use === true, date: cleanDate(t.divulgacao?.[d.key]?.date),
+    }])),
+    alvoBatismo: cleanInt(t.alvoBatismo),
+    alvoEstudos: cleanInt(t.alvoEstudos),
+    acoes: Object.fromEntries(ACOES.map((a) => [a.key, cleanDate(t.acoes?.[a.key])])),
+  };
+}
+
+const data = {
+  register: (input) => guard(async () => {
+    const name = clean(input.name, 120);
+    const phone = clean(input.phone, 30);
+    const role = input.role === 'pastor' || input.role === 'lider' ? input.role : '';
+    if (!name || !role || onlyDigits(phone).length < 8) throw fail('Informe nome, função e um telefone válido.');
+    const dup = await getDocs(query(collection(db, USERS), where('phoneDigits', '==', onlyDigits(phone))));
+    if (!dup.empty) throw fail('Já existe um cadastro com este telefone. Use "Entrar".');
+    const user = {
+      name, phone, phoneDigits: onlyDigits(phone), role,
+      church: clean(input.church, 120), district: clean(input.district, 120),
+      createdAt: new Date().toISOString(),
+    };
+    const ref = await addDoc(collection(db, USERS), user);
+    return { id: ref.id, ...user };
+  }),
+
+  login: (phone) => guard(async () => {
+    const digits = onlyDigits(phone);
+    if (!digits) throw fail('Informe o telefone.');
+    const snap = await getDocs(query(collection(db, USERS), where('phoneDigits', '==', digits)));
+    if (snap.empty) throw fail('Nenhum cadastro encontrado com este telefone.');
+    return withId(snap.docs[0]);
+  }),
+
+  getUser: (id) => guard(async () => {
+    const snap = await getDoc(doc(db, USERS, id));
+    return snap.exists() ? withId(snap) : null;
+  }),
+
+  myTeams: () => guard(async () => {
+    const snap = await getDocs(query(collection(db, TEAMS), where('ownerId', '==', session.user.id)));
+    return snap.docs.map(withId).sort(byCreated);
+  }),
+
+  getTeam: (id) => guard(async () => {
+    const snap = await getDoc(doc(db, TEAMS, id));
+    if (!snap.exists()) throw fail('Equipe não encontrada.');
+    const team = withId(snap);
+    if (team.ownerId !== session.user.id) throw fail('Esta equipe pertence a outro usuário.');
+    return team;
+  }),
+
+  createTeam: (input) => guard(async () => {
+    const t = sanitizeTeam({ ...blankTeam(), ...input });
+    if (!t.name) throw fail('Informe o nome da equipe.');
+    t.church = t.church || session.user.church || '';
+    t.district = t.district || session.user.district || '';
+    const now = new Date().toISOString();
+    const team = { ...t, ownerId: session.user.id, createdAt: now, updatedAt: now };
+    const ref = await addDoc(collection(db, TEAMS), team);
+    return { id: ref.id, ...team };
+  }),
+
+  saveTeam: (team) => guard(async () => {
+    const t = sanitizeTeam(team);
+    if (!t.name) throw fail('Informe o nome da equipe.');
+    await setDoc(doc(db, TEAMS, team.id), {
+      ...t, ownerId: session.user.id, createdAt: team.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString(),
+    });
+  }),
+
+  deleteTeam: (id) => guard(() => deleteDoc(doc(db, TEAMS, id))),
+
+  overview: () => guard(async () => {
+    const [us, ts] = await Promise.all([getDocs(collection(db, USERS)), getDocs(collection(db, TEAMS))]);
+    const users = new Map(us.docs.map((d) => [d.id, withId(d)]));
+    return {
+      users: [...users.values()],
+      teams: ts.docs.map(withId).sort(byCreated).map((t) => ({ ...t, owner: users.get(t.ownerId) || null })),
+    };
+  }),
+};
 
 // ---------- Cálculos ----------
 
@@ -441,14 +558,13 @@ function renderAuth(mode = 'entrar') {
 
   $('#authForm').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const form = new FormData(e.target);
-    const data = Object.fromEntries(form.entries());
+    const form = Object.fromEntries(new FormData(e.target).entries());
     const btn = $('button', e.target);
     btn.disabled = true;
     try {
       const user = mode === 'cadastrar'
-        ? await api('/register', { method: 'POST', body: data })
-        : await api('/login', { method: 'POST', body: { phone: data.phone } });
+        ? await data.register(form)
+        : await data.login(form.phone);
       setSession({ kind: 'user', user });
       toast(mode === 'cadastrar' ? 'Cadastro criado com sucesso!' : `Olá, ${firstName(user.name)}!`);
       location.hash = '#/painel';
@@ -459,15 +575,12 @@ function renderAuth(mode = 'entrar') {
   });
 }
 
-async function checkStorage() {
-  try {
-    const health = await api('/health');
-    const box = $('#storageWarn');
-    if (!health.ok && box) {
-      box.innerHTML = `<div class="setup-warn">${icon('alert')}<div><strong>Banco de dados não configurado</strong>
-        <p>Os cadastros ainda não podem ser salvos. No painel do Vercel, adicione a integração <b>Upstash Redis</b> a este projeto e faça um novo deploy.</p></div></div>`;
-    }
-  } catch { /* sem conexão: os erros aparecem ao enviar o formulário */ }
+function checkStorage() {
+  const box = $('#storageWarn');
+  if (!firebaseReady && box) {
+    box.innerHTML = `<div class="setup-warn">${icon('alert')}<div><strong>Firebase não configurado</strong>
+      <p>Os cadastros ainda não podem ser salvos. Preencha o arquivo <b>js/firebase-config.js</b> com os dados do projeto Firebase.</p></div></div>`;
+  }
 }
 
 function bindPhoneMask(input) {
@@ -477,7 +590,7 @@ function bindPhoneMask(input) {
 // ---------- Painel do líder ----------
 
 async function renderDashboard() {
-  const teams = (await api('/teams')).map(normalize);
+  const teams = (await data.myTeams()).map(normalize);
   const calebes = teams.reduce((a, t) => a + t.members.length, 0);
   const batismo = teams.reduce((a, t) => a + t.alvoBatismo, 0);
   const estudos = teams.reduce((a, t) => a + t.alvoEstudos, 0);
@@ -546,10 +659,10 @@ function newTeamDialog() {
     $('[data-cancel]', el).onclick = close;
     $('form', el).addEventListener('submit', async (e) => {
       e.preventDefault();
-      const data = Object.fromEntries(new FormData(e.target).entries());
-      if (!data.name.trim()) return toast('Informe o nome da equipe.', 'error');
+      const input = Object.fromEntries(new FormData(e.target).entries());
+      if (!input.name.trim()) return toast('Informe o nome da equipe.', 'error');
       try {
-        const team = await api('/teams', { method: 'POST', body: data });
+        const team = await data.createTeam(input);
         close();
         toast('Equipe criada!');
         location.hash = `#/equipe/${team.id}/equipe`;
@@ -582,7 +695,7 @@ function flushSave() {
   saveTimer = null;
   if (!draft) return saving;
   const snapshot = JSON.parse(JSON.stringify(draft));
-  saving = saving.then(() => api(`/teams/${snapshot.id}`, { method: 'PUT', body: snapshot }))
+  saving = saving.then(() => data.saveTeam(snapshot))
     .then(() => setSaveState('', 'Todas as alterações salvas'))
     .catch((err) => { setSaveState('error', 'Erro ao salvar'); toast(err.message, 'error'); });
   return saving;
@@ -599,7 +712,7 @@ window.addEventListener('beforeunload', (e) => {
 
 async function renderTeam(id, stepKey = 'equipe') {
   if (saveTimer) await flushSave();
-  if (!draft || draft.id !== id) draft = normalize(await api(`/teams/${id}`));
+  if (!draft || draft.id !== id) draft = normalize(await data.getTeam(id));
   const stepIndex = Math.max(0, STEPS.findIndex((s) => s.key === stepKey));
   const step = STEPS[stepIndex];
 
@@ -792,7 +905,7 @@ function bindSection(key) {
       if (!ok) return;
       clearTimeout(saveTimer); saveTimer = null;
       try {
-        await api(`/teams/${draft.id}`, { method: 'DELETE' });
+        await data.deleteTeam(draft.id);
         draft = null;
         toast('Equipe excluída.');
         location.hash = '#/painel';
@@ -861,8 +974,8 @@ let adminQuery = '';
 
 async function loadOverview(force = false) {
   if (!overview || force) {
-    const data = await api('/admin/overview');
-    overview = { ...data, teams: data.teams.map(normalize) };
+    const result = await data.overview();
+    overview = { ...result, teams: result.teams.map(normalize) };
   }
   return overview;
 }
@@ -1188,6 +1301,8 @@ function exportCsv(teams) {
 
 // ---------- Roteador ----------
 
+let sessionChecked = false;
+
 async function route() {
   const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
   const [page, a, b] = parts;
@@ -1206,6 +1321,16 @@ async function route() {
       if (page !== 'admin') { location.hash = '#/admin/geral'; return; }
       if (a === 'equipe' && b) return await renderAdminTeam(b);
       return await renderAdmin(a || 'geral', true);
+    }
+    if (!sessionChecked) {
+      const fresh = await data.getUser(session.user.id);
+      if (!fresh) {
+        setSession(null);
+        toast('Cadastro não encontrado. Entre novamente.', 'error');
+        return renderAuth('entrar');
+      }
+      setSession({ kind: 'user', user: fresh });
+      sessionChecked = true;
     }
     if (page === 'equipe' && a) return await renderTeam(a, b);
     if (page !== 'painel') { location.hash = '#/painel'; return; }
