@@ -25,7 +25,7 @@ vercel.json             Configuração do Vercel
 4. **Configurações do projeto → Seus apps → Web (`</>`)**: registre o app e copie o `firebaseConfig`.
 5. Cole esses valores em `js/firebase-config.js`.
 
-Enquanto o arquivo não for preenchido, o site abre normalmente e mostra o aviso "Firebase não configurado".
+Enquanto o arquivo não for preenchido, o site funciona em **modo local**: os dados ficam salvos apenas no navegador de quem está usando (útil para testar). Depois de preencher, o site passa a usar o Firestore automaticamente.
 
 ## Funcionalidades
 
