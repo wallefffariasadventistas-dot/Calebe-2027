@@ -56,7 +56,6 @@ const STEPS = [
 // ---------- Ícones ----------
 
 const ICONS = {
-  logo: '<path d="M12 3 21 19H3Z" fill="none" stroke="url(#lg)" stroke-width="1.8" stroke-linejoin="round"/><path d="M12 9.5 16.5 17h-9Z" fill="url(#lg)"/>',
   home: '<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1Z"/>',
   users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18.5 14.8c1.6.8 2.6 2.5 3 5.2"/>',
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4.2-6 8-6s7 2 8 6"/>',
@@ -99,9 +98,6 @@ const ICONS = {
 };
 
 function icon(name, extra = '') {
-  if (name === 'logo') {
-    return `<svg viewBox="0 0 24 24" aria-hidden="true"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#e7c77a"/><stop offset="1" stop-color="#b8892f"/></linearGradient></defs>${ICONS.logo}</svg>`;
-  }
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${ICONS[name] || ''}</svg>`;
 }
 
@@ -465,7 +461,7 @@ function shell(content, active) {
 
   return `<div class="shell">
     <aside class="sidebar">
-      <div class="brand"><div class="brand-mark">${icon('logo')}</div><div><div class="brand-name">Calebe 2027</div><div class="brand-sub">Acompanhamento</div></div></div>
+      <div class="brand"><img class="brand-logo" src="assets/logo-calebe-claro.png" alt="Missão Calebe"><div class="brand-sub">Acompanhamento 2027</div></div>
       <nav class="nav" aria-label="Principal">
         <div class="nav-title">${isAdmin ? 'Administração' : 'Área do líder'}</div>
         ${links.map((l) => `<a href="${l.href}" class="${active === l.key ? 'active' : ''}">${icon(l.ico)}${l.label}</a>`).join('')}
@@ -477,7 +473,7 @@ function shell(content, active) {
       </div>
     </aside>
     <header class="topbar">
-      <div class="brand"><div class="brand-mark">${icon('logo')}</div><div class="brand-name">Calebe 2027</div></div>
+      <div class="brand"><img class="brand-logo" src="assets/logo-calebe-claro.png" alt="Missão Calebe"></div>
       <button class="btn btn-sm logout" data-logout>${icon('logout')}Sair</button>
     </header>
     <main class="main fade-in">${content}</main>
@@ -499,15 +495,14 @@ function bindShell() {
 // ---------- Tela de entrada ----------
 
 function renderAuth(mode = 'entrar') {
+  const watermark = Array.from({ length: 14 }, (_, i) =>
+    `<span>${(i % 2 ? 'EU VOU ' : 'EU SOU ').repeat(12)}</span>`).join('');
   app.innerHTML = `<div class="auth">
+    <div class="auth-watermark" aria-hidden="true">${watermark}</div>
     <section class="auth-hero">
-      <div class="brand"><div class="brand-mark">${icon('logo')}</div><div><div class="brand-name">Calebe 2027</div><div class="brand-sub">Missão · Evangelismo</div></div></div>
-      <div>
-        <span class="hero-eyebrow">${icon('sparkle', 'style="width:14px;height:14px"')} Sistema de acompanhamento</span>
-        <h1 class="hero-title">Calebe <em>2027</em></h1>
-        <p class="hero-text">Cadastre sua equipe, organize os responsáveis, registre treinamentos, divulgação, alvos e ações — tudo em um só lugar, acompanhado em tempo real.</p>
-        <div class="hero-steps">${STEPS.map((s, i) => `<span>${i + 1}. ${s.label}</span>`).join('')}</div>
-      </div>
+      <img class="auth-logo" src="assets/logo-calebe.png" alt="Missão Calebe — Minhas férias no topo! Jovens Adventistas">
+      <p class="auth-tag">Sistema de acompanhamento <b>Calebe 2027</b></p>
+      <div class="hero-steps">${STEPS.map((s, i) => `<span>${i + 1}. ${s.label}</span>`).join('')}</div>
       <blockquote class="hero-verse">“Dá-me este monte.”<small>Josué 14:12</small></blockquote>
     </section>
     <section class="auth-panel">
