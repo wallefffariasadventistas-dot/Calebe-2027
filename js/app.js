@@ -11,6 +11,16 @@ import {
 
 const DEADLINE = new Date(2026, 9, 31, 23, 59, 59); // 31/10/2026
 
+const DISTRITOS = [
+  'Aeroporto - PI', 'Agricolândia', 'Além Rio', 'Boa Esperança - Parnaíba', 'Bom Jesus', 'Campo Maior',
+  'Central Teresina', 'Dirceu Arco Verde', 'Floriano', 'Guadalupe', 'José de Freitas', 'Luzilândia',
+  'Monte Castelo', 'Parnaíba', 'Parque Ideal', 'Parque Piauí', 'Passagem das Pedras - Picos', 'Picos',
+  'Piripiri', 'Porto Alegre', 'Primavera', 'Promorar', 'São Raimundo Nonato', 'Teresina Leste',
+];
+
+// Função de cada pessoa cadastrada na equipe
+const FUNCOES = { participante: 'Participante', lider: 'Líder' };
+
 const RESPONSAVEIS = [
   { key: 'visitacao', label: 'Visitação', icon: 'door' },
   { key: 'pregador', label: 'Pregador', icon: 'book' },
@@ -208,7 +218,7 @@ function sanitizeTeam(t) {
     church: clean(t.church, 120),
     district: clean(t.district, 120),
     members: (t.members || []).slice(0, 500)
-      .map((m) => ({ name: clean(m.name, 120), phone: clean(m.phone, 30) }))
+      .map((m) => ({ name: clean(m.name, 120), phone: clean(m.phone, 30), role: m.role === 'lider' ? 'lider' : 'participante' }))
       .filter((m) => m.name),
     responsaveis: Object.fromEntries(RESPONSAVEIS.map((r) => [r.key, clean(t.responsaveis?.[r.key], 120)])),
     treinamentos: Object.fromEntries(TREINAMENTOS.map((m) => [m.key, {
@@ -229,12 +239,18 @@ const data = {
     const name = clean(input.name, 120);
     const phone = clean(input.phone, 30);
     const role = input.role === 'pastor' || input.role === 'lider' ? input.role : '';
+    const district = DISTRITOS.includes(input.district) ? input.district : '';
     if (!name || !role || onlyDigits(phone).length < 8) throw fail('Informe nome, função e um telefone válido.');
+    if (!district) throw fail('Escolha o seu distrito.');
     const dup = await getDocs(query(collection(db, USERS), where('phoneDigits', '==', onlyDigits(phone))));
     if (!dup.empty) throw fail('Já existe um cadastro com este telefone. Use "Entrar".');
+    if (role === 'pastor') {
+      const pastor = await getDocs(query(collection(db, USERS), where('district', '==', district), where('role', '==', 'pastor')));
+      if (!pastor.empty) throw fail(`O distrito ${district} já possui pastor cadastrado (${pastor.docs[0].data().name}).`);
+    }
     const user = {
       name, phone, phoneDigits: onlyDigits(phone), role,
-      church: clean(input.church, 120), district: clean(input.district, 120),
+      church: clean(input.church, 120), district,
       createdAt: new Date().toISOString(),
     };
     const ref = await addDoc(collection(db, USERS), user);
@@ -254,16 +270,17 @@ const data = {
     return snap.exists() ? withId(snap) : null;
   }),
 
-  myTeams: () => guard(async () => {
-    const snap = await getDocs(query(collection(db, TEAMS), where('ownerId', '==', session.user.id)));
-    return snap.docs.map(withId).sort(byCreated);
+  // Distritos que já têm pastor cadastrado
+  pastorDistricts: () => guard(async () => {
+    const snap = await getDocs(query(collection(db, USERS), where('role', '==', 'pastor')));
+    return new Set(snap.docs.map((d) => d.data().district));
   }),
 
   getTeam: (id) => guard(async () => {
     const snap = await getDoc(doc(db, TEAMS, id));
     if (!snap.exists()) throw fail('Equipe não encontrada.');
     const team = withId(snap);
-    if (team.ownerId !== session.user.id) throw fail('Esta equipe pertence a outro usuário.');
+    if (!canEdit(team)) throw fail('Você não tem permissão para editar esta equipe.');
     return team;
   }),
 
@@ -271,7 +288,7 @@ const data = {
     const t = sanitizeTeam({ ...blankTeam(), ...input });
     if (!t.name) throw fail('Informe o nome da equipe.');
     t.church = t.church || session.user.church || '';
-    t.district = t.district || session.user.district || '';
+    t.district = session.user.district || '';
     const now = new Date().toISOString();
     const team = { ...t, ownerId: session.user.id, createdAt: now, updatedAt: now };
     const ref = await addDoc(collection(db, TEAMS), team);
@@ -281,15 +298,20 @@ const data = {
   saveTeam: (team) => guard(async () => {
     const t = sanitizeTeam(team);
     if (!t.name) throw fail('Informe o nome da equipe.');
+    if (!canEdit(team)) throw fail('Você não tem permissão para editar esta equipe.');
+    // Dono e distrito da equipe não mudam ao editar (o pastor pode editar equipes dos líderes)
     await setDoc(doc(db, TEAMS, team.id), {
-      ...t, ownerId: session.user.id, createdAt: team.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString(),
+      ...t, ownerId: team.ownerId, district: team.district,
+      createdAt: team.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString(),
     });
   }),
 
   deleteTeam: (id) => guard(() => deleteDoc(doc(db, TEAMS, id))),
 
+  // Administrador: todos os dados. Pastor e líder: apenas o próprio distrito.
   overview: () => guard(async () => {
-    const [us, ts] = await Promise.all([getDocs(collection(db, USERS)), getDocs(collection(db, TEAMS))]);
+    const byDistrict = (col) => (isAdmin() ? collection(db, col) : query(collection(db, col), where('district', '==', session.user.district)));
+    const [us, ts] = await Promise.all([getDocs(byDistrict(USERS)), getDocs(byDistrict(TEAMS))]);
     const users = new Map(us.docs.map((d) => [d.id, withId(d)]));
     return {
       users: [...users.values()],
@@ -297,6 +319,20 @@ const data = {
     };
   }),
 };
+
+// ---------- Permissões ----------
+
+const isAdmin = () => session && session.kind === 'admin';
+const isPastor = () => session && session.kind === 'user' && session.user.role === 'pastor';
+
+// Pastor edita todas as equipes do seu distrito; líder edita as equipes que cadastrou
+function canEdit(team) {
+  if (!session || session.kind !== 'user' || !team) return false;
+  if (isPastor()) return team.district === session.user.district;
+  return team.ownerId === session.user.id;
+}
+
+const leadersOf = (t) => t.members.filter((m) => m.role === 'lider');
 
 // ---------- Cálculos ----------
 
@@ -318,7 +354,7 @@ function normalize(team) {
     treinamentos: { ...b.treinamentos, ...(team.treinamentos || {}) },
     divulgacao: { ...b.divulgacao, ...(team.divulgacao || {}) },
     acoes: { ...b.acoes, ...(team.acoes || {}) },
-    members: team.members || [],
+    members: (team.members || []).map((m) => ({ ...m, role: m.role === 'lider' ? 'lider' : 'participante' })),
   };
 }
 
@@ -442,32 +478,47 @@ document.addEventListener('mousemove', (e) => {
 
 // ---------- Estrutura (sidebar) ----------
 
-function shell(content, active, bottom = null) {
-  const isAdmin = session.kind === 'admin';
-  const links = isAdmin
-    ? [
-        { href: '#/admin/geral', label: 'Visão geral', short: 'Geral', ico: 'chart', key: 'geral' },
-        { href: '#/admin/equipes', label: 'Equipes', short: 'Equipes', ico: 'users', key: 'equipes' },
-        { href: '#/admin/evangelismo', label: 'Evangelismo', short: 'Alvos', ico: 'water', key: 'evangelismo' },
-        { href: '#/admin/estrutura', label: 'Estrutura', short: 'Estrutura', ico: 'grad', key: 'estrutura' },
-        { href: '#/admin/divulgacao', label: 'Divulgação', short: 'Divulgar', ico: 'megaphone', key: 'divulgacao' },
-        { href: '#/admin/acoes', label: 'Ações', short: 'Ações', ico: 'calendar', key: 'acoes' },
-      ]
+// Seções de acompanhamento (administrador: geral · pastor/líder: apenas o distrito)
+const VIEW_LINKS = [
+  { key: 'geral', label: 'Visão geral', short: 'Geral', ico: 'chart' },
+  { key: 'equipes', label: 'Equipes', short: 'Equipes', ico: 'users' },
+  { key: 'evangelismo', label: 'Evangelismo', short: 'Alvos', ico: 'water' },
+  { key: 'estrutura', label: 'Estrutura', short: 'Estrutura', ico: 'grad' },
+  { key: 'divulgacao', label: 'Divulgação', short: 'Divulgar', ico: 'megaphone' },
+  { key: 'acoes', label: 'Ações', short: 'Ações', ico: 'calendar' },
+];
+
+const viewBase = () => (isAdmin() ? '#/admin' : '#/distrito');
+
+function shell(content, active, { bottom = '', nav = true } = {}) {
+  const admin = isAdmin();
+  const base = viewBase();
+  const groups = admin
+    ? [{ title: 'Administração', links: [
+        ...VIEW_LINKS.map((l) => ({ ...l, href: `${base}/${l.key}`, bottom: true })),
+        { key: 'relatorios', label: 'Relatórios', ico: 'download', href: '#/admin/relatorios' },
+      ] }]
     : [
-        { href: '#/painel', label: 'Minhas equipes', ico: 'home', key: 'painel' },
+        { title: isPastor() ? 'Área do pastor' : 'Área do líder', links: [
+          { key: 'painel', label: 'Início', short: 'Início', ico: 'home', href: '#/painel', bottom: true },
+        ] },
+        { title: `Distrito ${session.user.district || ''}`, links: VIEW_LINKS.map((l) => ({
+          ...l, href: `${base}/${l.key}`, bottom: ['geral', 'equipes', 'evangelismo', 'acoes'].includes(l.key),
+        })) },
       ];
-  const name = isAdmin ? 'Administrador' : session.user.name;
-  const role = isAdmin ? 'Acompanhamento geral' : session.user.role === 'pastor' ? 'Pastor' : 'Líder';
+  const bottomLinks = groups.flatMap((g) => g.links).filter((l) => l.bottom);
+  const name = admin ? 'Administrador' : session.user.name;
+  const role = admin ? 'Acompanhamento geral' : `${isPastor() ? 'Pastor' : 'Líder'} · ${session.user.district || ''}`;
 
   return `<div class="shell">
     <aside class="sidebar">
       <div class="brand"><img class="brand-logo" src="assets/logo-calebe-claro.png" alt="Missão Calebe"><div class="brand-sub">Acompanhamento 2027</div></div>
       <nav class="nav" aria-label="Principal">
-        <div class="nav-title">${isAdmin ? 'Administração' : 'Área do líder'}</div>
-        ${links.map((l) => `<a href="${l.href}" class="${active === l.key ? 'active' : ''}">${icon(l.ico)}${l.label}</a>`).join('')}
+        ${groups.map((g) => `<div class="nav-title">${esc(g.title)}</div>
+        ${g.links.map((l) => `<a href="${l.href}" class="${active === l.key ? 'active' : ''}">${icon(l.ico)}${l.label}</a>`).join('')}`).join('')}
       </nav>
       <div class="sidebar-foot">
-        <div class="user-chip"><div class="avatar">${isAdmin ? icon('shield', 'style="width:18px;height:18px"') : esc(initials(name))}</div>
+        <div class="user-chip"><div class="avatar">${admin ? icon('shield', 'style="width:18px;height:18px"') : esc(initials(name))}</div>
           <div class="who"><strong>${esc(name)}</strong><small>${esc(role)}</small></div></div>
         <button class="btn btn-sm logout" data-logout>${icon('logout')}Sair</button>
       </div>
@@ -475,14 +526,13 @@ function shell(content, active, bottom = null) {
     <header class="topbar">
       <div class="brand"><img class="brand-logo" src="assets/logo-calebe-claro.png" alt="Missão Calebe"></div>
       <div class="topbar-user">
-        <span class="avatar sm" title="${esc(name)}">${isAdmin ? icon('shield', 'style="width:15px;height:15px"') : esc(initials(name))}</span>
+        <span class="avatar sm" title="${esc(name)}">${admin ? icon('shield', 'style="width:15px;height:15px"') : esc(initials(name))}</span>
         <button class="btn btn-sm logout" data-logout>${icon('logout')}Sair</button>
       </div>
     </header>
-    <main class="main fade-in ${bottom !== '' ? 'has-bottom' : ''}">${content}</main>
-    ${bottom ?? (isAdmin
-      ? `<nav class="bottom-nav" aria-label="Seções">${links.map((l) => `<a href="${l.href}" class="${active === l.key ? 'active' : ''}">${icon(l.ico)}<span>${l.short}</span></a>`).join('')}</nav>`
-      : '')}
+    <main class="main fade-in has-bottom">${content}</main>
+    ${nav ? `<nav class="bottom-nav" aria-label="Seções">${bottomLinks.map((l) => `<a href="${l.href}" class="${active === l.key ? 'active' : ''}">${icon(l.ico)}<span>${l.short}</span></a>`).join('')}</nav>` : ''}
+    ${bottom}
   </div>`;
 }
 
@@ -528,10 +578,14 @@ function renderAuth(mode = 'entrar') {
           </div>
           <label class="field"><span>Nome completo</span><input class="input" name="name" autocomplete="name" placeholder="Ex.: João da Silva" required></label>
           <label class="field"><span>Telefone (WhatsApp)</span><input class="input" name="phone" inputmode="tel" autocomplete="tel" placeholder="(00) 00000-0000" data-phone required></label>
-          <div class="grid-2">
-            <label class="field"><span>Igreja</span><input class="input" name="church" placeholder="Nome da igreja"></label>
-            <label class="field"><span>Distrito</span><input class="input" name="district" placeholder="Nome do distrito" list="districtList"></label>
-          </div>
+          <label class="field"><span>Distrito</span>
+            <select class="select" name="district" id="districtSelect" required>
+              <option value="">Selecione o seu distrito</option>
+              ${DISTRITOS.map((d) => `<option value="${esc(d)}">${esc(d)}</option>`).join('')}
+            </select>
+            <small class="hint" id="districtHint">Cada distrito tem um único pastor e pode ter vários líderes e equipes.</small>
+          </label>
+          <label class="field"><span>Igreja</span><input class="input" name="church" placeholder="Nome da sua igreja"></label>
           <button class="btn btn-gold btn-block" style="height:48px">Criar cadastro ${icon('arrowRight')}</button>
         </form>` : `
         <form class="auth-form" id="authForm" novalidate>
@@ -554,6 +608,7 @@ function renderAuth(mode = 'entrar') {
   $$('input[name="mode"]').forEach((r) => r.addEventListener('change', () => { location.hash = `#/${r.value}`; }));
   $$('[data-phone]').forEach(bindPhoneMask);
   $('[data-admin]').onclick = () => { setSession({ kind: 'admin' }); location.hash = '#/admin/geral'; };
+  if (mode === 'cadastrar') bindDistrictChoice();
 
   $('#authForm').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -574,6 +629,28 @@ function renderAuth(mode = 'entrar') {
   });
 }
 
+// Na função Pastor, distritos que já têm pastor ficam indisponíveis
+async function bindDistrictChoice() {
+  const select = $('#districtSelect');
+  let taken = new Set();
+  try { taken = await data.pastorDistricts(); } catch { /* segue sem a marcação */ }
+  const update = () => {
+    const pastor = $('input[name="role"]:checked').value === 'pastor';
+    $$('option', select).forEach((o) => {
+      if (!o.value) return;
+      const blocked = pastor && taken.has(o.value);
+      o.disabled = blocked;
+      o.textContent = blocked ? `${o.value} — já possui pastor` : o.value;
+    });
+    if (select.selectedOptions[0]?.disabled) select.value = '';
+    $('#districtHint').textContent = pastor
+      ? 'Cada distrito tem um único pastor. Distritos que já têm pastor aparecem bloqueados.'
+      : 'O distrito pode ter vários líderes e várias equipes.';
+  };
+  $$('input[name="role"]').forEach((r) => r.addEventListener('change', update));
+  update();
+}
+
 function checkStorage() {
   const box = $('#storageWarn');
   if (!firebaseReady && box) {
@@ -589,53 +666,68 @@ function bindPhoneMask(input) {
 // ---------- Painel do líder ----------
 
 async function renderDashboard() {
-  const teams = (await data.myTeams()).map(normalize);
-  const calebes = teams.reduce((a, t) => a + t.members.length, 0);
-  const batismo = teams.reduce((a, t) => a + t.alvoBatismo, 0);
-  const estudos = teams.reduce((a, t) => a + t.alvoEstudos, 0);
-  const first = firstName(session.user.name);
+  const ov = await loadOverview(true);
+  const teams = ov.teams;
+  const T = totals(teams);
+  const mine = teams.filter(canEdit);
+  const others = teams.filter((t) => !canEdit(t));
+  const pastor = ov.users.find((u) => u.role === 'pastor');
+  const leaders = ov.users.filter((u) => u.role === 'lider');
+  const district = session.user.district;
 
   app.innerHTML = shell(`
     <div class="page-head">
       <div>
-        <div class="eyebrow">${session.user.role === 'pastor' ? 'Pastor' : 'Líder'}${session.user.district ? ` · Distrito ${esc(session.user.district)}` : ''}</div>
-        <h1 class="page-title">Olá, ${esc(first)}</h1>
-        <p class="page-sub">Acompanhe as etapas do Calebe 2027 de cada uma das suas equipes.</p>
+        <div class="eyebrow">${isPastor() ? 'Pastor' : 'Líder'} · Distrito ${esc(district)}</div>
+        <h1 class="page-title">Olá, ${esc(firstName(session.user.name))}</h1>
+        <p class="page-sub">${isPastor()
+          ? `Você acompanha e pode editar todas as equipes do distrito ${esc(district)}.`
+          : `Acompanhe o distrito ${esc(district)} e gerencie as equipes que você cadastrou.`}</p>
+        <div class="district-people">
+          <span class="badge navy">${icon('shield')}Pastor: ${pastor ? esc(pastor.name) : 'ainda não cadastrado'}</span>
+          <span class="badge gold">${icon('users')}${leaders.length} ${leaders.length === 1 ? 'líder cadastrado' : 'líderes cadastrados'}</span>
+        </div>
       </div>
       <button class="btn btn-gold" data-new>${icon('plus')}Nova equipe</button>
     </div>
     <div class="stack">
       ${deadlineBanner()}
       <div class="kpis">
-        ${kpi({ label: 'Equipes cadastradas', value: num(teams.length), ico: 'users' })}
-        ${kpi({ label: 'Calebes inscritos', value: num(calebes), ico: 'user', variant: 'feature', foot: 'Contagem automática' })}
-        ${kpi({ label: 'Alvo de batismos', value: num(batismo), ico: 'water', variant: 'gold' })}
-        ${kpi({ label: 'Alvo de estudantes da Bíblia', value: num(estudos), ico: 'book', variant: 'gold' })}
+        ${kpi({ label: 'Equipes do distrito', value: num(T.equipes), ico: 'users' })}
+        ${kpi({ label: 'Calebes inscritos', value: num(T.calebes), ico: 'user', variant: 'feature', foot: `${num(T.lideres)} ${T.lideres === 1 ? 'líder' : 'líderes'} · ${num(T.calebes - T.lideres)} participantes` })}
+        ${kpi({ label: 'Alvo de batismos do distrito', value: num(T.batismo), ico: 'water', variant: 'gold' })}
+        ${kpi({ label: 'Alvo de estudantes da Bíblia', value: num(T.estudos), ico: 'book', variant: 'gold' })}
       </div>
       <div>
-        <div class="card-title" style="margin-bottom:14px">Suas equipes</div>
+        <div class="section-title">${isPastor() ? 'Equipes do distrito' : 'Suas equipes'}</div>
         <div class="team-grid">
-          ${teams.map(teamCard).join('')}
+          ${mine.map((t) => teamCard(t, `#/equipe/${t.id}`)).join('')}
           <button class="new-team" data-new><span class="plus">${icon('plus')}</span>Cadastrar nova equipe</button>
         </div>
       </div>
-    </div>`, 'painel', `<button class="fab" data-new aria-label="Nova equipe">${icon('plus')}<span>Nova equipe</span></button>`);
+      ${others.length ? `<div>
+        <div class="section-title">Outras equipes do distrito <small>somente visualização</small></div>
+        <div class="team-grid">${others.map((t) => teamCard(t, `#/distrito/equipe/${t.id}`)).join('')}</div>
+      </div>` : ''}
+    </div>`, 'painel', { bottom: `<button class="fab" data-new aria-label="Nova equipe">${icon('plus')}<span>Nova equipe</span></button>` });
   bindShell();
   $$('[data-new]').forEach((b) => (b.onclick = newTeamDialog));
 }
 
-function teamCard(t) {
+function teamCard(t, href) {
   const s = stepScores(t);
   const pct = progress(t);
-  return `<a class="card team-card" href="#/equipe/${t.id}">
+  const leaders = leadersOf(t);
+  return `<a class="card team-card" href="${href}">
     <div class="top">
       <div style="min-width:0">
         <h3>${esc(t.name)}</h3>
-        <div class="meta">${esc([t.church, t.district && `Distrito ${t.district}`].filter(Boolean).join(' · ') || 'Sem igreja informada')}</div>
+        <div class="meta">${esc([t.church, t.owner && `por ${t.owner.name}`].filter(Boolean).join(' · ') || 'Sem igreja informada')}</div>
       </div>
       ${ring(pct)}
     </div>
     <div class="steps-dots" aria-label="Etapas">${STEPS.map((st) => `<i class="${s[st.key] >= 1 ? 'on' : s[st.key] > 0 ? 'part' : ''}" title="${st.label}"></i>`).join('')}</div>
+    ${leaders.length ? `<div class="team-leaders">${icon('shield')}<span><b>${leaders.length === 1 ? 'Líder' : 'Líderes'}:</b> ${esc(leaders.map((m) => m.name).join(', '))}</span></div>` : ''}
     <div class="stats">
       <div><b>${num(t.members.length)}</b><small>Calebes</small></div>
       <div><b>${num(t.alvoBatismo)}</b><small>Batismos</small></div>
@@ -649,10 +741,8 @@ function newTeamDialog() {
   modal(`<h3>Nova equipe</h3><p class="sub">Depois de criar, você poderá preencher todas as etapas.</p>
     <form id="newTeam">
       <label class="field"><span>Nome da equipe</span><input class="input" name="name" placeholder="Ex.: Equipe Monte Hebrom" required></label>
-      <div class="grid-2">
-        <label class="field"><span>Igreja</span><input class="input" name="church" value="${esc(u.church)}"></label>
-        <label class="field"><span>Distrito</span><input class="input" name="district" value="${esc(u.district)}"></label>
-      </div>
+      <label class="field"><span>Igreja</span><input class="input" name="church" value="${esc(u.church)}"></label>
+      <div class="fixed-field"><span>Distrito</span><strong>${esc(u.district)}</strong></div>
       <div class="actions"><button type="button" class="btn btn-ghost" data-cancel>Cancelar</button><button class="btn btn-primary">Criar equipe</button></div>
     </form>`, (el, close) => {
     $('[data-cancel]', el).onclick = close;
@@ -718,7 +808,7 @@ async function renderTeam(id, stepKey = 'equipe') {
   const step = STEPS[stepIndex];
 
   app.innerHTML = shell(`
-    <a class="back" href="#/painel">${icon('arrowLeft')}Minhas equipes</a>
+    <a class="back" href="#/painel">${icon('arrowLeft')}Início</a>
     <div class="page-head">
       <div>
         <div class="eyebrow">Etapas do Calebe</div>
@@ -738,7 +828,7 @@ async function renderTeam(id, stepKey = 'equipe') {
             : `<a class="btn btn-gold" href="#/painel">${icon('check')}Concluir</a>`}
         </div>
       </section>
-    </div>`, 'painel', stepBar(id, stepIndex));
+    </div>`, 'painel', { bottom: stepBar(id, stepIndex), nav: false });
   bindShell();
   bindSection(step.key);
   centerActiveStep();
@@ -749,7 +839,7 @@ function stepBar(id, i) {
   const prev = STEPS[i - 1];
   const next = STEPS[i + 1];
   return `<nav class="step-bar" aria-label="Navegação entre etapas">
-    ${prev ? `<a class="btn btn-ghost" href="#/equipe/${id}/${prev.key}" aria-label="Voltar para ${prev.label}">${icon('arrowLeft')}</a>` : `<a class="btn btn-ghost" href="#/painel" aria-label="Minhas equipes">${icon('home')}</a>`}
+    ${prev ? `<a class="btn btn-ghost" href="#/equipe/${id}/${prev.key}" aria-label="Voltar para ${prev.label}">${icon('arrowLeft')}</a>` : `<a class="btn btn-ghost" href="#/painel" aria-label="Início">${icon('home')}</a>`}
     <div class="step-bar-mid"><strong>Etapa ${i + 1} de ${STEPS.length}</strong><span class="save-state"><i></i><span>Salvo</span></span></div>
     ${next ? `<a class="btn btn-primary" href="#/equipe/${id}/${next.key}">${next.label}${icon('arrowRight')}</a>` : `<a class="btn btn-gold" href="#/painel">${icon('check')}Concluir</a>`}
   </nav>`;
@@ -785,7 +875,10 @@ function refreshDerived() {
 }
 
 const DERIVED = {
-  count: () => `<b>${draft.members.length}</b><span>Calebes<br>inscritos</span>`,
+  count: () => {
+    const l = leadersOf(draft).length;
+    return `<b>${draft.members.length}</b><span>Calebes inscritos<small>${l} ${l === 1 ? 'líder' : 'líderes'} · ${draft.members.length - l} participantes</small></span>`;
+  },
   respCount: () => `${RESPONSAVEIS.filter((r) => draft.responsaveis[r.key].trim()).length} de ${RESPONSAVEIS.length} preenchidos`,
 };
 
@@ -799,18 +892,22 @@ function sectionHead(title, text, aside = '') {
 
 const SECTIONS = {
   equipe() {
-    return `${sectionHead('Cadastro da equipe', 'Informe o nome e o telefone de cada participante. A quantidade de Calebes inscritos é contabilizada automaticamente.',
+    return `${sectionHead('Cadastro da equipe', 'Informe o nome, o telefone e a função de cada pessoa: participante ou líder. A quantidade de Calebes inscritos é contabilizada automaticamente.',
       `<div class="counter-pill" data-derived="count">${DERIVED.count()}</div>`)}
       <div class="grid-3" style="margin-bottom:24px">
         <label class="field"><span>Nome da equipe</span><input class="input" data-path="name" value="${esc(draft.name)}"></label>
         <label class="field"><span>Igreja</span><input class="input" data-path="church" value="${esc(draft.church)}"></label>
-        <label class="field"><span>Distrito</span><input class="input" data-path="district" value="${esc(draft.district)}"></label>
+        <div class="fixed-field"><span>Distrito</span><strong>${esc(draft.district || '—')}</strong></div>
       </div>
-      <div class="label" style="margin-bottom:10px">Participantes</div>
+      <div class="label" style="margin-bottom:10px">Participantes e líderes</div>
       <div id="members">${membersHtml()}</div>
       <form class="member-add" id="memberAdd">
-        <input class="input" name="name" placeholder="Nome do participante" aria-label="Nome do participante">
+        <input class="input" name="name" placeholder="Nome" aria-label="Nome">
         <input class="input" name="phone" placeholder="Telefone" inputmode="tel" aria-label="Telefone" data-phone>
+        <div class="segmented role-pick" role="radiogroup" aria-label="Função">
+          <label><input type="radio" name="role" value="participante" checked><span>Participante</span></label>
+          <label><input type="radio" name="role" value="lider"><span>Líder</span></label>
+        </div>
         <button class="btn btn-primary">${icon('plus')}Adicionar</button>
       </form>
       <div style="display:flex;justify-content:flex-end;margin-top:24px"><button class="btn btn-danger btn-sm" data-delete-team>${icon('trash')}Excluir equipe</button></div>`;
@@ -884,11 +981,14 @@ function membersHtml() {
   if (!draft.members.length) {
     return `<div class="empty">${icon('users')}<p>Nenhum participante cadastrado ainda.<br>Adicione o primeiro Calebe abaixo.</p></div>`;
   }
-  return `<div class="members-head"><span>#</span><span>Nome</span><span>Telefone</span><span></span></div>
-    ${draft.members.map((m, i) => `<div class="member-row">
-      <span class="idx">${i + 1}</span>
-      <input class="input" data-path="members.${i}.name" value="${esc(m.name)}" aria-label="Nome do participante ${i + 1}">
-      <input class="input phone" data-path="members.${i}.phone" value="${esc(m.phone)}" data-phone inputmode="tel" aria-label="Telefone do participante ${i + 1}">
+  return `<div class="members-head"><span>#</span><span>Nome</span><span>Telefone</span><span>Função</span><span></span></div>
+    ${draft.members.map((m, i) => `<div class="member-row ${m.role === 'lider' ? 'is-leader' : ''}">
+      <span class="idx">${m.role === 'lider' ? icon('shield') : i + 1}</span>
+      <input class="input" data-path="members.${i}.name" value="${esc(m.name)}" aria-label="Nome ${i + 1}">
+      <input class="input phone" data-path="members.${i}.phone" value="${esc(m.phone)}" data-phone inputmode="tel" aria-label="Telefone ${i + 1}">
+      <select class="select role" data-path="members.${i}.role" aria-label="Função de ${esc(m.name)}">
+        ${Object.entries(FUNCOES).map(([k, v]) => `<option value="${k}" ${m.role === k ? 'selected' : ''}>${v}</option>`).join('')}
+      </select>
       <button class="icon-btn" data-remove="${i}" aria-label="Remover ${esc(m.name)}">${icon('trash')}</button>
     </div>`).join('')}`;
 }
@@ -916,7 +1016,8 @@ function bindSection(key) {
       e.preventDefault();
       const name = addForm.name.value.trim();
       if (!name) { toast('Informe o nome do participante.', 'error'); addForm.name.focus(); return; }
-      draft.members.push({ name, phone: addForm.phone.value.trim() });
+      const role = $('input[name="role"]:checked', addForm).value;
+      draft.members.push({ name, phone: addForm.phone.value.trim(), role });
       addForm.reset();
       rerenderMembers();
       addForm.name.focus();
@@ -975,6 +1076,11 @@ function onFieldChange(el) {
     const small = $('div > small', option);
     if (small && path.startsWith('treinamentos')) small.textContent = el.checked ? 'Treinamento realizado' : 'Ainda não realizado';
   }
+  if (el.classList.contains('role')) {
+    const row = el.closest('.member-row');
+    row.classList.toggle('is-leader', el.value === 'lider');
+    $('.idx', row).innerHTML = el.value === 'lider' ? icon('shield') : [...row.parentElement.querySelectorAll('.member-row')].indexOf(row) + 1;
+  }
   const resp = el.closest('.resp-item');
   if (resp) resp.classList.toggle('filled', !!el.value.trim());
   if (el.type === 'date') {
@@ -1008,7 +1114,7 @@ const districtOf = (t) => (t.district || '').trim() || 'Sem distrito';
 function filteredTeams() {
   const q = adminQuery.trim().toLowerCase();
   return overview.teams.filter((t) =>
-    (!adminFilter || districtOf(t) === adminFilter) &&
+    (!isAdmin() || !adminFilter || districtOf(t) === adminFilter) &&
     (!q || [t.name, t.church, t.district, t.owner && t.owner.name].join(' ').toLowerCase().includes(q)));
 }
 
@@ -1018,60 +1124,61 @@ function groupCount(teams, keyFn, valueFn = () => 1) {
   return [...map.entries()].map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value || a.label.localeCompare(b.label));
 }
 
-const ADMIN_TABS = [
-  { key: 'geral', label: 'Visão geral' },
-  { key: 'equipes', label: 'Equipes' },
-  { key: 'evangelismo', label: 'Evangelismo' },
-  { key: 'estrutura', label: 'Estrutura' },
-  { key: 'divulgacao', label: 'Divulgação' },
-  { key: 'acoes', label: 'Ações' },
-];
+const viewTabs = () => (isAdmin()
+  ? [...VIEW_LINKS, { key: 'relatorios', label: 'Relatórios' }]
+  : VIEW_LINKS);
 
-async function renderAdmin(tab = 'geral', force = false) {
+async function renderOverview(tab = 'geral', force = false) {
   await loadOverview(force);
-  if (!ADMIN_TABS.some((t) => t.key === tab)) tab = 'geral';
-  const districts = [...new Set(overview.teams.map(districtOf))].sort();
+  const admin = isAdmin();
+  const tabs = viewTabs();
+  if (!tabs.some((t) => t.key === tab)) tab = 'geral';
+  const districts = [...new Set([...DISTRITOS, ...overview.teams.map(districtOf)])];
   if (adminFilter && !districts.includes(adminFilter)) adminFilter = '';
   const teams = filteredTeams();
+  const base = viewBase();
 
   app.innerHTML = shell(`
     <div class="page-head">
       <div>
-        <div class="eyebrow">Área do administrador</div>
-        <h1 class="page-title">Acompanhamento Calebe 2027</h1>
-        <p class="page-sub">Dados consolidados automaticamente a partir de todas as equipes cadastradas.</p>
+        <div class="eyebrow">${admin ? 'Área do administrador' : `Acompanhamento do distrito · ${isPastor() ? 'Pastor' : 'Líder'}`}</div>
+        <h1 class="page-title">${admin ? 'Acompanhamento Calebe 2027' : `Distrito ${esc(session.user.district)}`}</h1>
+        <p class="page-sub">${admin
+          ? 'Dados consolidados automaticamente a partir de todas as equipes cadastradas.'
+          : 'Dados consolidados automaticamente a partir das equipes do seu distrito.'}</p>
         ${firebaseReady ? '' : '<span class="badge warn" style="margin-top:10px">Modo local: dados apenas deste navegador</span>'}
       </div>
       <div class="head-actions">
         <button class="btn btn-ghost" data-refresh>${icon('refresh')}Atualizar</button>
-        <button class="btn btn-primary" data-csv>${icon('download')}Exportar planilha</button>
+        ${admin ? `<a class="btn btn-primary" href="#/admin/relatorios">${icon('download')}Relatórios</a>` : ''}
       </div>
     </div>
-    <nav class="tabs" aria-label="Seções">${ADMIN_TABS.map((t) => `<a href="#/admin/${t.key}" class="${t.key === tab ? 'active' : ''}">${t.label}</a>`).join('')}</nav>
+    <nav class="tabs ${admin ? '' : 'keep'}" aria-label="Seções">${tabs.map((t) => `<a href="${base}/${t.key}" class="${t.key === tab ? 'active' : ''}">${t.label}</a>`).join('')}</nav>
     <div class="toolbar">
       <div class="search">${icon('search')}<input class="input" id="adminSearch" placeholder="Buscar equipe, igreja ou responsável" value="${esc(adminQuery)}"></div>
-      <select class="select" id="adminDistrict" aria-label="Filtrar por distrito">
+      ${admin ? `<select class="select" id="adminDistrict" aria-label="Filtrar por distrito">
         <option value="">Todos os distritos</option>
         ${districts.map((d) => `<option ${d === adminFilter ? 'selected' : ''}>${esc(d)}</option>`).join('')}
-      </select>
+      </select>` : ''}
       <span class="hint">${teams.length} de ${overview.teams.length} equipes</span>
     </div>
     <div class="stack" id="adminBody">${ADMIN_VIEWS[tab](teams)}</div>`, tab);
   bindShell();
-  bindAdminBody();
+  bindAdminBody(tab);
 
-  $('[data-refresh]').onclick = async () => { await renderAdmin(tab, true); toast('Dados atualizados.'); };
-  $('[data-csv]').onclick = () => exportCsv(teams);
-  $('#adminDistrict').onchange = (e) => {
-    adminFilter = e.target.value;
-    store.set('calebe.adminDistrict', adminFilter || null);
-    renderAdmin(tab);
-  };
+  $('[data-refresh]').onclick = async () => { await renderOverview(tab, true); toast('Dados atualizados.'); };
+  if (admin) {
+    $('#adminDistrict').onchange = (e) => {
+      adminFilter = e.target.value;
+      store.set('calebe.adminDistrict', adminFilter || null);
+      renderOverview(tab);
+    };
+  }
   $('#adminSearch').addEventListener('input', (e) => {
     adminQuery = e.target.value;
     $('#adminBody').innerHTML = ADMIN_VIEWS[tab](filteredTeams());
     $('.toolbar .hint').textContent = `${filteredTeams().length} de ${overview.teams.length} equipes`;
-    bindAdminBody();
+    bindAdminBody(tab);
   });
 }
 
@@ -1095,12 +1202,13 @@ function labelTables(root = document) {
   });
 }
 
-function bindAdminBody() {
+function bindAdminBody(tab) {
   labelTables();
   $$('[data-team]').forEach((el) => {
-    el.onclick = () => { location.hash = `#/admin/equipe/${el.dataset.team}`; };
+    el.onclick = () => { location.hash = `${viewBase()}/equipe/${el.dataset.team}`; };
     el.onkeydown = (e) => { if (e.key === 'Enter') el.click(); };
   });
+  if (tab === 'relatorios') bindReports();
 }
 
 function teamCell(t) {
@@ -1121,6 +1229,7 @@ function totals(teams) {
   return {
     equipes: teams.length,
     calebes: teams.reduce((a, t) => a + t.members.length, 0),
+    lideres: teams.reduce((a, t) => a + leadersOf(t).length, 0),
     batismo: teams.reduce((a, t) => a + t.alvoBatismo, 0),
     estudos: teams.reduce((a, t) => a + t.alvoEstudos, 0),
     distritos: new Set(teams.map(districtOf)).size,
@@ -1138,13 +1247,16 @@ const ADMIN_VIEWS = {
       ${deadlineBanner({ admin: true })}
       <div class="kpis">
         ${kpi({ label: 'Equipes cadastradas', value: num(T.equipes), ico: 'users', foot: `${T.distritos} ${T.distritos === 1 ? 'distrito' : 'distritos'}` })}
-        ${kpi({ label: 'Calebes inscritos', value: num(T.calebes), ico: 'user', variant: 'feature', foot: T.equipes ? `média de ${(T.calebes / T.equipes).toFixed(1).replace('.', ',')} por equipe` : '' })}
+        ${kpi({ label: 'Calebes inscritos', value: num(T.calebes), ico: 'user', variant: 'feature', foot: `${num(T.lideres)} ${T.lideres === 1 ? 'líder' : 'líderes'} · ${num(T.calebes - T.lideres)} participantes` })}
         ${kpi({ label: 'Alvo total de batismos', value: num(T.batismo), ico: 'water', variant: 'gold' })}
         ${kpi({ label: 'Alvo de estudantes da Bíblia', value: num(T.estudos), ico: 'book', variant: 'gold' })}
       </div>
       <div class="row-2">
-        ${chartCard('Equipes por distrito', 'Quantidade de equipes cadastradas', bars(groupCount(teams, districtOf), { unit: 'equipes' }))}
-        ${chartCard('Calebes por distrito', 'Participantes inscritos', bars(groupCount(teams, districtOf, (t) => t.members.length), { unit: 'Calebes' }))}
+        ${isAdmin()
+          ? `${chartCard('Equipes por distrito', 'Quantidade de equipes cadastradas', bars(groupCount(teams, districtOf), { unit: 'equipes' }))}
+             ${chartCard('Calebes por distrito', 'Participantes inscritos', bars(groupCount(teams, districtOf, (t) => t.members.length), { unit: 'Calebes' }))}`
+          : `${chartCard('Calebes por equipe', 'Participantes e líderes inscritos', bars(teams.map((t) => ({ label: t.name, value: t.members.length, extra: `${leadersOf(t).length} líderes` })).sort((a, b) => b.value - a.value), { unit: 'Calebes' }))}
+             ${chartCard('Alvo de batismos por equipe', 'Soma do distrito', bars(teams.map((t) => ({ label: t.name, value: t.alvoBatismo })).sort((a, b) => b.value - a.value), { unit: 'batismos' }))}`}
       </div>
       <div class="row-3">
         ${chartCard('Andamento', 'Preenchimento médio das etapas', `<div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap">${ring(avg, 'lg')}<div class="mini-stats" style="flex:1;min-width:160px;grid-template-columns:1fr">
@@ -1157,14 +1269,15 @@ const ADMIN_VIEWS = {
   equipes(teams) {
     const T = totals(teams);
     return tableCard('Equipes cadastradas', 'Clique em uma equipe para ver todos os detalhes.', `<table class="data">
-      <thead><tr><th>Equipe</th><th>Responsável pelo cadastro</th><th class="num">Calebes</th><th class="num">Batismos</th><th class="num">Estudos</th><th>Treinamentos</th><th class="num">Progresso</th></tr></thead>
+      <thead><tr><th>Equipe</th><th>Líderes da equipe</th><th>Cadastrada por</th><th class="num">Calebes</th><th class="num">Batismos</th><th class="num">Estudos</th><th>Treinamentos</th><th class="num">Progresso</th></tr></thead>
       <tbody>${teams.length ? teams.map((t) => `<tr ${rowAttrs(t)}>
         <td>${teamCell(t)}</td>
+        <td>${leadersOf(t).length ? esc(leadersOf(t).map((m) => m.name).join(', ')) : '<span class="muted">—</span>'}</td>
         <td>${t.owner ? `${esc(t.owner.name)}<br><small class="muted">${t.owner.role === 'pastor' ? 'Pastor' : 'Líder'} · ${esc(t.owner.phone)}</small>` : '—'}</td>
         <td class="num">${num(t.members.length)}</td><td class="num">${num(t.alvoBatismo)}</td><td class="num">${num(t.alvoEstudos)}</td>
         <td><span class="badge ${trainingsDone(t) === 3 ? 'ok' : trainingsDone(t) ? 'gold' : 'muted'}">${trainingsDone(t)}/3</span></td>
-        <td class="num"><strong>${progress(t)}%</strong></td></tr>`).join('') : emptyTable(7)}</tbody>
-      ${teams.length ? `<tfoot><tr><td>Total · ${T.equipes} equipes</td><td></td><td class="num">${num(T.calebes)}</td><td class="num">${num(T.batismo)}</td><td class="num">${num(T.estudos)}</td><td></td><td></td></tr></tfoot>` : ''}
+        <td class="num"><strong>${progress(t)}%</strong></td></tr>`).join('') : emptyTable(8)}</tbody>
+      ${teams.length ? `<tfoot><tr><td>Total · ${T.equipes} equipes</td><td></td><td></td><td class="num">${num(T.calebes)}</td><td class="num">${num(T.batismo)}</td><td class="num">${num(T.estudos)}</td><td></td><td></td></tr></tfoot>` : ''}
     </table>`);
   },
 
@@ -1182,10 +1295,10 @@ const ADMIN_VIEWS = {
         ${chartCard('Alvo de batismos por equipe', '', bars(byTeam('alvoBatismo'), { unit: 'batismos' }))}
         ${chartCard('Estudos bíblicos por equipe', '', bars(byTeam('alvoEstudos'), { unit: 'estudos' }))}
       </div>
-      <div class="row-2">
+      ${isAdmin() ? `<div class="row-2">
         ${chartCard('Batismos por distrito', '', bars(groupCount(teams, districtOf, (t) => t.alvoBatismo), { unit: 'batismos' }))}
         ${chartCard('Estudos bíblicos por distrito', '', bars(groupCount(teams, districtOf, (t) => t.alvoEstudos), { unit: 'estudos' }))}
-      </div>
+      </div>` : ''}
       ${tableCard('Alvos por equipe', '', `<table class="data">
         <thead><tr><th>Equipe</th><th class="num">Calebes</th><th class="num">Alvo de batismo</th><th class="num">Estudos bíblicos</th></tr></thead>
         <tbody>${teams.length ? teams.map((t) => `<tr ${rowAttrs(t)}><td>${teamCell(t)}</td><td class="num">${num(t.members.length)}</td><td class="num">${num(t.alvoBatismo)}</td><td class="num">${num(t.alvoEstudos)}</td></tr>`).join('') : emptyTable(4)}</tbody>
@@ -1269,26 +1382,32 @@ function timeline(events, teamTitle = false) {
   }).join('')}</div>`;
 }
 
-async function renderAdminTeam(id) {
-  await loadOverview();
+async function renderTeamDetail(id) {
+  await loadOverview(true);
   const t = overview.teams.find((x) => x.id === id);
-  if (!t) { toast('Equipe não encontrada.', 'error'); location.hash = '#/admin/equipes'; return; }
+  if (!t) { toast('Equipe não encontrada.', 'error'); location.hash = `${viewBase()}/equipes`; return; }
+  const leaders = leadersOf(t);
   const s = stepScores(t);
   const dl = (rows) => `<dl class="detail-list" style="grid-template-columns:1fr">${rows.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('')}</dl>`;
 
   app.innerHTML = shell(`
-    <a class="back" href="#/admin/equipes">${icon('arrowLeft')}Todas as equipes</a>
+    <a class="back" href="${viewBase()}/equipes">${icon('arrowLeft')}${isAdmin() ? 'Todas as equipes' : 'Equipes do distrito'}</a>
     <div class="page-head">
       <div>
         <div class="eyebrow">${esc(districtOf(t))}</div>
         <h1 class="page-title">${esc(t.name)}</h1>
         <p class="page-sub">${esc(t.church || '')}${t.owner ? ` · Cadastrada por ${esc(t.owner.name)} (${t.owner.role === 'pastor' ? 'Pastor' : 'Líder'}, ${esc(t.owner.phone)})` : ''}</p>
       </div>
-      ${ring(progress(t), 'lg')}
+      <div class="head-actions">
+        ${canEdit(t) ? `<a class="btn btn-primary" href="#/equipe/${t.id}">${icon('arrowRight')}Editar equipe</a>` : ''}
+        ${ring(progress(t), 'lg')}
+      </div>
     </div>
     <div class="stack">
+      ${leaders.length ? `<div class="leaders-box">${icon('shield')}<div><small>${leaders.length === 1 ? 'Líder da equipe' : 'Líderes da equipe'}</small>
+        <strong>${leaders.map((m) => `${esc(m.name)}${m.phone ? ` <span>${esc(m.phone)}</span>` : ''}`).join(' · ')}</strong></div></div>` : ''}
       <div class="kpis">
-        ${kpi({ label: 'Calebes inscritos', value: num(t.members.length), ico: 'user', variant: 'feature' })}
+        ${kpi({ label: 'Calebes inscritos', value: num(t.members.length), ico: 'user', variant: 'feature', foot: `${leaders.length} ${leaders.length === 1 ? 'líder' : 'líderes'} · ${t.members.length - leaders.length} participantes` })}
         ${kpi({ label: 'Alvo de batismo', value: num(t.alvoBatismo), ico: 'water', variant: 'gold' })}
         ${kpi({ label: 'Estudos bíblicos', value: num(t.alvoEstudos), ico: 'book', variant: 'gold' })}
         ${kpi({ label: 'Treinamentos realizados', value: `${trainingsDone(t)}/3`, ico: 'grad' })}
@@ -1298,7 +1417,7 @@ async function renderAdminTeam(id) {
       </div>
       <div class="row-2">
         ${tableCard(`Participantes (${t.members.length})`, '', `<table class="data list"><thead><tr><th>#</th><th>Nome</th><th>Telefone</th></tr></thead>
-          <tbody>${t.members.length ? t.members.map((m, i) => `<tr><td class="muted">${i + 1}</td><td>${esc(m.name)}</td><td>${esc(m.phone) || '<span class="muted">—</span>'}</td></tr>`).join('') : '<tr><td colspan="3"><div class="empty">Nenhum participante.</div></td></tr>'}</tbody></table>`)}
+          <tbody>${t.members.length ? t.members.map((m, i) => `<tr><td class="muted">${i + 1}</td><td>${esc(m.name)}${m.role === 'lider' ? ' <span class="badge gold">Líder</span>' : ''}</td><td>${esc(m.phone) || '<span class="muted">—</span>'}</td></tr>`).join('') : '<tr><td colspan="3"><div class="empty">Nenhum participante.</div></td></tr>'}</tbody></table>`)}
         ${chartCard('Responsáveis', '', dl(RESPONSAVEIS.map((r) => [r.label, t.responsaveis[r.key].trim() ? esc(t.responsaveis[r.key]) : '<span class="muted">—</span>'])))}
       </div>
       <div class="row-3">
@@ -1312,37 +1431,251 @@ async function renderAdminTeam(id) {
   labelTables();
 }
 
-// ---------- Exportação ----------
+// ---------- Relatórios (administrador) ----------
 
-function exportCsv(teams) {
-  const head = ['Equipe', 'Igreja', 'Distrito', 'Cadastrado por', 'Função', 'Telefone', 'Calebes inscritos', 'Participantes',
-    ...RESPONSAVEIS.map((r) => `Resp. ${r.label}`),
-    ...TREINAMENTOS.flatMap((m) => [`Treinamento ${m.label}`, `Data treinamento ${m.label}`]),
-    'Local',
-    ...DIVULGACAO.flatMap((d) => [d.label, `Data ${d.label}`]),
-    'Alvo de batismo', 'Estudos bíblicos',
-    ...ACOES.map((a) => a.label), 'Progresso (%)'];
-  const rows = teams.map((t) => [
-    t.name, t.church, districtOf(t), t.owner?.name || '', t.owner ? (t.owner.role === 'pastor' ? 'Pastor' : 'Líder') : '', t.owner?.phone || '',
-    t.members.length, t.members.map((m) => `${m.name}${m.phone ? ` (${m.phone})` : ''}`).join('; '),
-    ...RESPONSAVEIS.map((r) => t.responsaveis[r.key]),
-    ...TREINAMENTOS.flatMap((m) => [t.treinamentos[m.key].done ? 'Sim' : 'Não', fmtDate(t.treinamentos[m.key].date)]),
-    t.local,
-    ...DIVULGACAO.flatMap((d) => [t.divulgacao[d.key].use ? 'Sim' : 'Não', fmtDate(t.divulgacao[d.key].date)]),
-    t.alvoBatismo, t.alvoEstudos,
-    ...ACOES.map((a) => fmtDate(t.acoes[a.key])), progress(t),
-  ]);
-  const cell = (v) => {
-    let s = String(v ?? '');
-    if (/^[=+\-@]/.test(s)) s = `'${s}`; // evita execução de fórmulas no Excel
-    return `"${s.replace(/"/g, '""')}"`;
+const pastorOf = (district) => overview.users.find((u) => u.role === 'pastor' && u.district === district);
+const byDistrictAndName = (a, b) => districtOf(a).localeCompare(districtOf(b)) || a.name.localeCompare(b.name);
+
+function participantRows(teams) {
+  return [...teams].sort(byDistrictAndName).flatMap((t) => {
+    const pastor = pastorOf(t.district);
+    return [...t.members]
+      .sort((a, b) => (a.role === 'lider' ? 0 : 1) - (b.role === 'lider' ? 0 : 1))
+      .map((m) => ({
+        Distrito: districtOf(t),
+        'Pastor do distrito': pastor ? pastor.name : '',
+        Igreja: t.church,
+        Equipe: t.name,
+        Nome: m.name,
+        Telefone: m.phone,
+        'Função': FUNCOES[m.role],
+      }));
+  });
+}
+
+function teamRows(teams) {
+  return [...teams].sort(byDistrictAndName).map((t) => {
+    const leaders = leadersOf(t);
+    return {
+      Distrito: districtOf(t),
+      Equipe: t.name,
+      Igreja: t.church,
+      'Líderes da equipe': leaders.map((m) => m.name).join(', '),
+      'Telefones dos líderes': leaders.map((m) => m.phone).filter(Boolean).join(', '),
+      Calebes: t.members.length,
+      'Líderes': leaders.length,
+      Participantes: t.members.length - leaders.length,
+      'Alvo de batismo': t.alvoBatismo,
+      'Estudos bíblicos': t.alvoEstudos,
+      Local: t.local,
+      'Cadastrada por': t.owner ? `${t.owner.name} (${t.owner.role === 'pastor' ? 'Pastor' : 'Líder'})` : '',
+      'Progresso (%)': progress(t),
+    };
+  });
+}
+
+function districtRows(teams) {
+  const list = adminFilter ? [adminFilter] : [...new Set([...DISTRITOS, ...teams.map(districtOf)])];
+  return list.map((d) => {
+    const ts = teams.filter((t) => districtOf(t) === d);
+    const T = totals(ts);
+    const pastor = pastorOf(d);
+    return {
+      Distrito: d,
+      Pastor: pastor ? pastor.name : '',
+      'Telefone do pastor': pastor ? pastor.phone : '',
+      'Líderes cadastrados': overview.users.filter((u) => u.role === 'lider' && u.district === d).length,
+      Equipes: T.equipes,
+      Calebes: T.calebes,
+      'Líderes nas equipes': T.lideres,
+      'Alvo de batismo': T.batismo,
+      'Estudos bíblicos': T.estudos,
+    };
+  });
+}
+
+function stageRows(teams) {
+  return [...teams].sort(byDistrictAndName).map((t) => ({
+    Distrito: districtOf(t),
+    Equipe: t.name,
+    ...Object.fromEntries(RESPONSAVEIS.map((r) => [`Resp. ${r.label}`, t.responsaveis[r.key]])),
+    ...Object.fromEntries(TREINAMENTOS.flatMap((m) => [
+      [`Treinamento ${m.label}`, t.treinamentos[m.key].done ? 'Sim' : 'Não'],
+      [`Data treinamento ${m.label}`, fmtDate(t.treinamentos[m.key].date)],
+    ])),
+    Local: t.local,
+    ...Object.fromEntries(DIVULGACAO.flatMap((d) => [
+      [d.label, t.divulgacao[d.key].use ? 'Sim' : 'Não'],
+      [`Data ${d.label}`, fmtDate(t.divulgacao[d.key].date)],
+    ])),
+    ...Object.fromEntries(ACOES.map((a) => [a.label, fmtDate(t.acoes[a.key])])),
+  }));
+}
+
+ADMIN_VIEWS.relatorios = (teams) => {
+  const T = totals(teams);
+  const withPastor = DISTRITOS.filter((d) => pastorOf(d)).length;
+  const scope = adminFilter ? `Distrito ${esc(adminFilter)}` : 'Todos os distritos';
+  const card = (kind, title, text, formats) => `<div class="card report-card">
+    <div class="report-ico">${icon(kind === 'participantes' ? 'users' : kind === 'equipes' ? 'shield' : 'list')}</div>
+    <div><h3>${title}</h3><p>${text}</p></div>
+    <div class="report-actions">${formats.map((f) => `<button class="btn ${f === 'xlsx' ? 'btn-primary' : 'btn-ghost'}" data-export="${kind}" data-format="${f}">${icon('download')}${f === 'xlsx' ? 'Excel' : 'PDF'}</button>`).join('')}</div>
+  </div>`;
+  const districts = districtRows(teams);
+  return `
+    <div class="kpis">
+      ${kpi({ label: 'Calebes inscritos', value: num(T.calebes), ico: 'user', variant: 'feature', foot: scope })}
+      ${kpi({ label: 'Líderes nas equipes', value: num(T.lideres), ico: 'shield', variant: 'gold' })}
+      ${kpi({ label: 'Equipes', value: num(T.equipes), ico: 'users' })}
+      ${kpi({ label: 'Distritos com pastor', value: `${withPastor}/${DISTRITOS.length}`, ico: 'home' })}
+    </div>
+    <div class="report-grid">
+      ${card('participantes', 'Lista completa de participantes', 'Todos os Calebes com distrito, equipe, telefone e função (participante ou líder). Líderes aparecem em destaque.', ['xlsx', 'pdf'])}
+      ${card('equipes', 'Equipes e líderes', 'Cada equipe com seus líderes, telefones, quantidade de Calebes, alvos e progresso.', ['xlsx', 'pdf'])}
+      ${card('completo', 'Planilha completa', 'Uma planilha com as abas Distritos, Equipes, Participantes e Etapas (responsáveis, treinamentos, divulgação e ações).', ['xlsx'])}
+    </div>
+    <p class="hint">Os arquivos seguem o filtro de distrito e a busca acima · ${scope}.</p>
+    ${tableCard('Resumo por distrito', 'Pastor, líderes e totais de cada distrito', `<table class="data wide districts">
+      <thead><tr>${Object.keys(districts[0] || { Distrito: '' }).filter((k) => k !== 'Telefone do pastor').map((k) => `<th class="${typeof districts[0]?.[k] === 'number' ? 'num' : ''}">${k}</th>`).join('')}</tr></thead>
+      <tbody>${districts.map((r) => `<tr><td><strong>${esc(r.Distrito)}</strong></td>
+        <td>${r.Pastor ? `${esc(r.Pastor)}<br><small class="muted">${esc(r['Telefone do pastor'])}</small>` : '<span class="badge muted">Sem pastor</span>'}</td>
+        <td class="num">${r['Líderes cadastrados']}</td><td class="num">${r.Equipes}</td><td class="num">${r.Calebes}</td>
+        <td class="num">${r['Líderes nas equipes']}</td><td class="num">${r['Alvo de batismo']}</td><td class="num">${r['Estudos bíblicos']}</td></tr>`).join('')}</tbody>
+    </table>`)}
+    ${chartCard('Participantes por equipe', 'Toque em uma equipe para ver a lista', teams.length ? [...teams].sort(byDistrictAndName).map((t) => {
+      const leaders = leadersOf(t);
+      return `<details class="team-list">
+        <summary><div><strong>${esc(t.name)}</strong><small>${esc(districtOf(t))} · ${t.members.length} Calebes${leaders.length ? ` · Líder: ${esc(leaders.map((m) => m.name).join(', '))}` : ''}</small></div>${icon('chev')}</summary>
+        <ol>${[...t.members].sort((a, b) => (a.role === 'lider' ? 0 : 1) - (b.role === 'lider' ? 0 : 1)).map((m) => `<li class="${m.role === 'lider' ? 'lead' : ''}"><span>${esc(m.name)}${m.role === 'lider' ? ' <span class="badge gold">Líder</span>' : ''}</span><small>${esc(m.phone) || '—'}</small></li>`).join('') || '<li class="muted">Nenhum participante cadastrado.</li>'}</ol>
+      </details>`;
+    }).join('') : '<div class="empty">Nenhuma equipe encontrada.</div>')}`;
+};
+
+// Bibliotecas de Excel e PDF: carregadas só quando o administrador exporta
+const scripts = {};
+function loadScript(src) {
+  scripts[src] ||= new Promise((resolve, reject) => {
+    const el = document.createElement('script');
+    el.src = src;
+    el.onload = resolve;
+    el.onerror = () => { delete scripts[src]; reject(new Error('Não foi possível carregar o gerador de arquivos. Verifique sua conexão.')); };
+    document.head.appendChild(el);
+  });
+  return scripts[src];
+}
+
+function fileName(kind, ext) {
+  const slug = (adminFilter || 'todos-os-distritos').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  return `calebe-2027-${kind}-${slug}-${new Date().toISOString().slice(0, 10)}.${ext}`;
+}
+
+function bindReports() {
+  $$('[data-export]').forEach((btn) => (btn.onclick = async () => {
+    const { export: kind, format } = btn.dataset;
+    btn.disabled = true;
+    try {
+      if (format === 'xlsx') await exportExcel(kind, filteredTeams());
+      else await exportPdf(kind, filteredTeams());
+      toast('Arquivo gerado.');
+    } catch (err) {
+      toast(err.message || 'Não foi possível gerar o arquivo.', 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  }));
+}
+
+async function exportExcel(kind, teams) {
+  await loadScript('assets/vendor/xlsx.full.min.js');
+  const XLSX = window.XLSX;
+  const wb = XLSX.utils.book_new();
+  const add = (name, rows) => {
+    const ws = XLSX.utils.json_to_sheet(rows.length ? rows : [{ Aviso: 'Nenhum registro encontrado' }]);
+    const keys = Object.keys(rows[0] || { Aviso: '' });
+    ws['!cols'] = keys.map((k) => ({ wch: Math.min(48, Math.max(k.length, ...rows.map((r) => String(r[k] ?? '').length)) + 2) }));
+    if (rows.length) ws['!autofilter'] = { ref: ws['!ref'] };
+    XLSX.utils.book_append_sheet(wb, ws, name);
   };
-  const csv = '﻿' + [head, ...rows].map((r) => r.map(cell).join(';')).join('\r\n');
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
-  a.download = `calebe-2027-equipes-${new Date().toISOString().slice(0, 10)}.csv`;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  if (kind === 'participantes') add('Participantes', participantRows(teams));
+  if (kind === 'equipes') add('Equipes e líderes', teamRows(teams));
+  if (kind === 'completo') {
+    add('Distritos', districtRows(teams));
+    add('Equipes', teamRows(teams));
+    add('Participantes', participantRows(teams));
+    add('Etapas', stageRows(teams));
+  }
+  XLSX.writeFile(wb, fileName(kind, 'xlsx'));
+}
+
+// Logo em JPEG pequeno sobre o laranja do cabeçalho (deixa o PDF leve)
+async function logoDataUrl() {
+  const img = new Image();
+  img.src = 'assets/logo-calebe.png';
+  await img.decode();
+  const canvas = document.createElement('canvas');
+  canvas.width = 310;
+  canvas.height = Math.round(310 * img.height / img.width);
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#e8922d';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/jpeg', 0.9);
+}
+
+async function exportPdf(kind, teams) {
+  await loadScript('assets/vendor/jspdf.umd.min.js');
+  await loadScript('assets/vendor/jspdf.plugin.autotable.min.js');
+  const { jsPDF } = window.jspdf;
+  const landscape = kind === 'equipes';
+  const pdf = new jsPDF({ orientation: landscape ? 'landscape' : 'portrait', unit: 'mm', format: 'a4' });
+  const W = pdf.internal.pageSize.getWidth();
+  const brown = [63, 26, 20];
+  const orange = [232, 146, 45];
+  const T = totals(teams);
+  const title = kind === 'participantes' ? 'Lista completa de participantes' : 'Equipes e líderes';
+  const scope = adminFilter ? `Distrito ${adminFilter}` : 'Todos os distritos';
+
+  // Cabeçalho
+  pdf.setFillColor(...orange);
+  pdf.rect(0, 0, W, 30, 'F');
+  const logo = await logoDataUrl().catch(() => null);
+  if (logo) pdf.addImage(logo, 'JPEG', 10, 3.5, 31, 23);
+  pdf.setTextColor(...brown);
+  pdf.setFont('helvetica', 'bold');
+  pdf.setFontSize(16);
+  pdf.text(`Calebe 2027 · ${title}`, 46, 13);
+  pdf.setFont('helvetica', 'normal');
+  pdf.setFontSize(10);
+  pdf.text(`${scope} · ${T.equipes} equipes · ${T.calebes} Calebes (${T.lideres} líderes) · gerado em ${new Date().toLocaleDateString('pt-BR')}`, 46, 20);
+
+  const rows = kind === 'participantes' ? participantRows(teams) : teamRows(teams);
+  const columns = kind === 'participantes'
+    ? ['Distrito', 'Equipe', 'Nome', 'Telefone', 'Função']
+    : ['Distrito', 'Equipe', 'Líderes da equipe', 'Telefones dos líderes', 'Calebes', 'Alvo de batismo', 'Estudos bíblicos', 'Progresso (%)'];
+
+  pdf.autoTable({
+    startY: 36,
+    head: [columns],
+    body: rows.length ? rows.map((r) => columns.map((c) => String(r[c] ?? ''))) : [[{ content: 'Nenhum registro encontrado.', colSpan: columns.length }]],
+    styles: { font: 'helvetica', fontSize: 9, cellPadding: 2.2, textColor: [33, 22, 15], lineColor: [231, 226, 214], lineWidth: 0.1 },
+    headStyles: { fillColor: brown, textColor: [255, 244, 228], fontStyle: 'bold' },
+    alternateRowStyles: { fillColor: [250, 247, 241] },
+    margin: { left: 10, right: 10 },
+    columnStyles: kind === 'equipes' ? { 4: { halign: 'right' }, 5: { halign: 'right' }, 6: { halign: 'right' }, 7: { halign: 'right' } } : {},
+    didParseCell: (cell) => {
+      if (kind === 'participantes' && cell.section === 'body' && cell.row.raw[4] === 'Líder') {
+        cell.cell.styles.fillColor = [253, 235, 210];
+        cell.cell.styles.fontStyle = 'bold';
+      }
+    },
+    didDrawPage: () => {
+      const H = pdf.internal.pageSize.getHeight();
+      pdf.setFontSize(8);
+      pdf.setTextColor(139, 123, 113);
+      pdf.text(`Missão Calebe · Jovens Adventistas · página ${pdf.internal.getNumberOfPages()}`, W / 2, H - 6, { align: 'center' });
+    },
+  });
+  pdf.save(fileName(kind, 'pdf'));
 }
 
 // ---------- Roteador ----------
@@ -1365,8 +1698,8 @@ async function route() {
   try {
     if (session.kind === 'admin') {
       if (page !== 'admin') { location.hash = '#/admin/geral'; return; }
-      if (a === 'equipe' && b) return await renderAdminTeam(b);
-      return await renderAdmin(a || 'geral', true);
+      if (a === 'equipe' && b) return await renderTeamDetail(b);
+      return await renderOverview(a || 'geral', true);
     }
     if (!sessionChecked) {
       const fresh = await data.getUser(session.user.id);
@@ -1379,6 +1712,13 @@ async function route() {
       sessionChecked = true;
     }
     if (page === 'equipe' && a) return await renderTeam(a, b);
+    if (page === 'distrito') {
+      if (saveTimer) flushSave();
+      await saving;
+      draft = null;
+      if (a === 'equipe' && b) return await renderTeamDetail(b);
+      return await renderOverview(a || 'geral', true);
+    }
     if (page !== 'painel') { location.hash = '#/painel'; return; }
     if (saveTimer) flushSave();
     await saving;

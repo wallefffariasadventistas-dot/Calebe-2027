@@ -11,7 +11,7 @@ index.html              Página do sistema
 css/styles.css          Visual
 js/app.js               Telas e regras do sistema
 js/firebase-config.js   Configuração do projeto Firebase
-assets/                 Ícone
+assets/                 Logo, ícones e bibliotecas de Excel/PDF (assets/vendor)
 firestore.rules         Regras do banco (Firestore)
 firebase.json           Configuração do Firebase
 vercel.json             Configuração do Vercel
@@ -29,9 +29,13 @@ Enquanto o arquivo não for preenchido, o site funciona em **modo local**: os da
 
 ## Funcionalidades
 
-**Acesso (sem senha nesta fase)**
-- Pastor ou líder cria o cadastro (nome, telefone, igreja, distrito) e entra informando o telefone.
-- Botão "Área do Administrador" na tela inicial.
+**Acesso e permissões (sem senha nesta fase)**
+- Pastor ou líder cria o cadastro (nome, telefone, distrito e igreja) e entra informando o telefone.
+- 24 distritos fixos. **Cada distrito tem um único pastor** e pode ter vários líderes e várias equipes.
+- **Pastor e líder veem apenas o próprio distrito** (Calebes inscritos, alvos, equipes e todas as abas de acompanhamento).
+- O pastor edita todas as equipes do distrito; o líder edita as equipes que cadastrou e vê as demais em modo de consulta.
+- Cada pessoa da equipe é marcada como **participante** ou **líder**.
+- Somente o **administrador** vê o geral de todos os distritos.
 
 **Etapas do Calebe (por equipe)**
 1. **Equipe**: participantes com nome e telefone, com contagem automática de Calebes inscritos. Aviso do prazo de cadastro **até 31/10/2026**, com contagem regressiva.
@@ -51,6 +55,7 @@ As alterações são salvas automaticamente. O progresso de cada etapa aparece e
 - **Estrutura**: treinamentos (com datas), locais e responsáveis de cada equipe.
 - **Divulgação**: quantidade de equipes por meio de divulgação e agenda de datas.
 - **Ações**: linha do tempo de Sopões, Mutirões e Feiras de Saúde, com alerta para datas fora do mês previsto.
-- Filtro por distrito, busca e **exportação para planilha (CSV)**.
+- **Relatórios**: lista completa de participantes (com a função de cada um) e equipes com seus líderes, em **Excel e PDF**, além de uma planilha completa com as abas Distritos, Equipes, Participantes e Etapas. Resumo por distrito com o pastor de cada um.
+- Filtro por distrito e busca (os relatórios seguem o filtro).
 
 > Observação: como o acesso é sem senha, as regras do Firestore permitem leitura e escrita nas coleções do Calebe e a Área do Administrador fica aberta a quem acessar o site. Antes de divulgar amplamente, adicione autenticação.
