@@ -30,7 +30,8 @@ Enquanto o arquivo não for preenchido, o site funciona em **modo local**: os da
 ## Funcionalidades
 
 **Acesso e permissões (sem senha nesta fase)**
-- Pastor ou líder cria o cadastro (nome, telefone, distrito e igreja) e entra informando o telefone.
+- Pastor ou líder cria o cadastro e entra informando o telefone. O **pastor** informa nome, telefone e distrito (ele é o líder geral do distrito, sem igreja). O **líder** informa também a sua igreja.
+- No painel, o pastor vê todos os líderes do distrito, com igreja, telefone e equipes de cada um.
 - 24 distritos fixos. **Cada distrito tem um único pastor** e pode ter vários líderes e várias equipes.
 - **Pastor e líder veem apenas o próprio distrito** (Calebes inscritos, alvos, equipes e todas as abas de acompanhamento).
 - O pastor edita todas as equipes do distrito; o líder edita as equipes que cadastrou e vê as demais em modo de consulta.

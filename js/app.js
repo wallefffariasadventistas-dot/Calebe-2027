@@ -242,6 +242,8 @@ const data = {
     const district = DISTRITOS.includes(input.district) ? input.district : '';
     if (!name || !role || onlyDigits(phone).length < 8) throw fail('Informe nome, função e um telefone válido.');
     if (!district) throw fail('Escolha o seu distrito.');
+    const church = role === 'lider' ? clean(input.church, 120) : '';
+    if (role === 'lider' && !church) throw fail('Informe a sua igreja.');
     const dup = await getDocs(query(collection(db, USERS), where('phoneDigits', '==', onlyDigits(phone))));
     if (!dup.empty) throw fail('Já existe um cadastro com este telefone. Use "Entrar".');
     if (role === 'pastor') {
@@ -250,7 +252,7 @@ const data = {
     }
     const user = {
       name, phone, phoneDigits: onlyDigits(phone), role,
-      church: clean(input.church, 120), district,
+      church, district,
       createdAt: new Date().toISOString(),
     };
     const ref = await addDoc(collection(db, USERS), user);
@@ -585,7 +587,7 @@ function renderAuth(mode = 'entrar') {
             </select>
             <small class="hint" id="districtHint">Cada distrito tem um único pastor e pode ter vários líderes e equipes.</small>
           </label>
-          <label class="field"><span>Igreja</span><input class="input" name="church" placeholder="Nome da sua igreja"></label>
+          <label class="field" id="churchField" hidden><span>Igreja</span><input class="input" name="church" placeholder="Nome da sua igreja"></label>
           <button class="btn btn-gold btn-block" style="height:48px">Criar cadastro ${icon('arrowRight')}</button>
         </form>` : `
         <form class="auth-form" id="authForm" novalidate>
@@ -644,8 +646,11 @@ async function bindDistrictChoice() {
     });
     if (select.selectedOptions[0]?.disabled) select.value = '';
     $('#districtHint').textContent = pastor
-      ? 'Cada distrito tem um único pastor. Distritos que já têm pastor aparecem bloqueados.'
+      ? 'O pastor é o líder geral do distrito e acompanha todos os líderes e equipes dele. Distritos que já têm pastor aparecem bloqueados.'
       : 'O distrito pode ter vários líderes e várias equipes.';
+    // Pastor não informa igreja: ele responde pelo distrito inteiro
+    $('#churchField').hidden = pastor;
+    if (pastor) $('#churchField input').value = '';
   };
   $$('input[name="role"]').forEach((r) => r.addEventListener('change', update));
   update();
@@ -681,7 +686,7 @@ async function renderDashboard() {
         <div class="eyebrow">${isPastor() ? 'Pastor' : 'Líder'} · Distrito ${esc(district)}</div>
         <h1 class="page-title">Olá, ${esc(firstName(session.user.name))}</h1>
         <p class="page-sub">${isPastor()
-          ? `Você acompanha e pode editar todas as equipes do distrito ${esc(district)}.`
+          ? `Você é o líder geral do distrito ${esc(district)}: acompanha todos os líderes e pode editar todas as equipes.`
           : `Acompanhe o distrito ${esc(district)} e gerencie as equipes que você cadastrou.`}</p>
         <div class="district-people">
           <span class="badge navy">${icon('shield')}Pastor: ${pastor ? esc(pastor.name) : 'ainda não cadastrado'}</span>
@@ -699,12 +704,25 @@ async function renderDashboard() {
         ${kpi({ label: 'Alvo de estudantes da Bíblia', value: num(T.estudos), ico: 'book', variant: 'gold' })}
       </div>
       <div>
-        <div class="section-title">${isPastor() ? 'Equipes do distrito' : 'Suas equipes'}</div>
+        <div class="section-title">${isPastor() ? 'Equipes do distrito' : 'Suas equipes'}${isPastor() ? ` <small>${teams.length} ${teams.length === 1 ? 'equipe' : 'equipes'}</small>` : ''}</div>
         <div class="team-grid">
           ${mine.map((t) => teamCard(t, `#/equipe/${t.id}`)).join('')}
           <button class="new-team" data-new><span class="plus">${icon('plus')}</span>Cadastrar nova equipe</button>
         </div>
       </div>
+      ${isPastor() ? `<div>
+        <div class="section-title">Líderes do distrito <small>${leaders.length} ${leaders.length === 1 ? 'cadastrado' : 'cadastrados'}</small></div>
+        ${leaders.length ? `<div class="leader-grid">${leaders.map((u) => {
+          const own = teams.filter((t) => t.ownerId === u.id);
+          return `<div class="card leader-card">
+            <span class="avatar">${esc(initials(u.name))}</span>
+            <div class="who"><strong>${esc(u.name)}</strong><small>${esc(u.church || 'Igreja não informada')}</small>
+              <small>${esc(u.phone)}</small></div>
+            <div class="leader-teams"><b>${own.length}</b><small>${own.length === 1 ? 'equipe' : 'equipes'}</small></div>
+            ${own.length ? `<div class="leader-team-list">${own.map((t) => `<a href="#/equipe/${t.id}">${esc(t.name)}</a>`).join('')}</div>` : ''}
+          </div>`;
+        }).join('')}</div>` : `<div class="card empty">${icon('users')}<p>Nenhum líder cadastrado no distrito ainda.<br>Peça aos líderes que se cadastrem escolhendo o distrito ${esc(district)}.</p></div>`}
+      </div>` : ''}
       ${others.length ? `<div>
         <div class="section-title">Outras equipes do distrito <small>somente visualização</small></div>
         <div class="team-grid">${others.map((t) => teamCard(t, `#/distrito/equipe/${t.id}`)).join('')}</div>
@@ -741,7 +759,7 @@ function newTeamDialog() {
   modal(`<h3>Nova equipe</h3><p class="sub">Depois de criar, você poderá preencher todas as etapas.</p>
     <form id="newTeam">
       <label class="field"><span>Nome da equipe</span><input class="input" name="name" placeholder="Ex.: Equipe Monte Hebrom" required></label>
-      <label class="field"><span>Igreja</span><input class="input" name="church" value="${esc(u.church)}"></label>
+      <label class="field"><span>Igreja da equipe</span><input class="input" name="church" value="${esc(u.church || '')}" placeholder="Nome da igreja"></label>
       <div class="fixed-field"><span>Distrito</span><strong>${esc(u.district)}</strong></div>
       <div class="actions"><button type="button" class="btn btn-ghost" data-cancel>Cancelar</button><button class="btn btn-primary">Criar equipe</button></div>
     </form>`, (el, close) => {
