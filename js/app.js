@@ -1390,6 +1390,17 @@ async function route() {
   }
 }
 
-window.addEventListener('hashchange', route);
+// Cor da barra de status: laranja no login, marrom dentro do sistema
+function setThemeColor() {
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.content = session ? '#3f1a14' : '#e8922d';
+}
+
+window.addEventListener('hashchange', () => { route().finally(setThemeColor); });
+
+// Permite instalar como aplicativo (tela inicial do celular)
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => { navigator.serviceWorker.register('/sw.js').catch(() => {}); });
+}
 app.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
-route();
+route().finally(setThemeColor);
