@@ -442,16 +442,16 @@ document.addEventListener('mousemove', (e) => {
 
 // ---------- Estrutura (sidebar) ----------
 
-function shell(content, active) {
+function shell(content, active, bottom = null) {
   const isAdmin = session.kind === 'admin';
   const links = isAdmin
     ? [
-        { href: '#/admin/geral', label: 'Visão geral', ico: 'chart', key: 'geral' },
-        { href: '#/admin/equipes', label: 'Equipes', ico: 'users', key: 'equipes' },
-        { href: '#/admin/evangelismo', label: 'Evangelismo', ico: 'water', key: 'evangelismo' },
-        { href: '#/admin/estrutura', label: 'Estrutura', ico: 'grad', key: 'estrutura' },
-        { href: '#/admin/divulgacao', label: 'Divulgação', ico: 'megaphone', key: 'divulgacao' },
-        { href: '#/admin/acoes', label: 'Ações', ico: 'calendar', key: 'acoes' },
+        { href: '#/admin/geral', label: 'Visão geral', short: 'Geral', ico: 'chart', key: 'geral' },
+        { href: '#/admin/equipes', label: 'Equipes', short: 'Equipes', ico: 'users', key: 'equipes' },
+        { href: '#/admin/evangelismo', label: 'Evangelismo', short: 'Alvos', ico: 'water', key: 'evangelismo' },
+        { href: '#/admin/estrutura', label: 'Estrutura', short: 'Estrutura', ico: 'grad', key: 'estrutura' },
+        { href: '#/admin/divulgacao', label: 'Divulgação', short: 'Divulgar', ico: 'megaphone', key: 'divulgacao' },
+        { href: '#/admin/acoes', label: 'Ações', short: 'Ações', ico: 'calendar', key: 'acoes' },
       ]
     : [
         { href: '#/painel', label: 'Minhas equipes', ico: 'home', key: 'painel' },
@@ -474,9 +474,15 @@ function shell(content, active) {
     </aside>
     <header class="topbar">
       <div class="brand"><img class="brand-logo" src="assets/logo-calebe-claro.png" alt="Missão Calebe"></div>
-      <button class="btn btn-sm logout" data-logout>${icon('logout')}Sair</button>
+      <div class="topbar-user">
+        <span class="avatar sm" title="${esc(name)}">${isAdmin ? icon('shield', 'style="width:15px;height:15px"') : esc(initials(name))}</span>
+        <button class="btn btn-sm logout" data-logout>${icon('logout')}Sair</button>
+      </div>
     </header>
-    <main class="main fade-in">${content}</main>
+    <main class="main fade-in ${bottom !== '' ? 'has-bottom' : ''}">${content}</main>
+    ${bottom ?? (isAdmin
+      ? `<nav class="bottom-nav" aria-label="Seções">${links.map((l) => `<a href="${l.href}" class="${active === l.key ? 'active' : ''}">${icon(l.ico)}<span>${l.short}</span></a>`).join('')}</nav>`
+      : '')}
   </div>`;
 }
 
@@ -614,7 +620,7 @@ async function renderDashboard() {
           <button class="new-team" data-new><span class="plus">${icon('plus')}</span>Cadastrar nova equipe</button>
         </div>
       </div>
-    </div>`, 'painel');
+    </div>`, 'painel', `<button class="fab" data-new aria-label="Nova equipe">${icon('plus')}<span>Nova equipe</span></button>`);
   bindShell();
   $$('[data-new]').forEach((b) => (b.onclick = newTeamDialog));
 }
@@ -696,8 +702,10 @@ function flushSave() {
 }
 
 function setSaveState(cls, text) {
-  const el = $('#saveState');
-  if (el) { el.className = `save-state ${cls}`; el.innerHTML = `<i></i>${text}`; }
+  $$('.save-state').forEach((el) => {
+    el.className = `save-state ${cls}`;
+    el.innerHTML = `<i></i><span>${text}</span>`;
+  });
 }
 
 window.addEventListener('beforeunload', (e) => {
@@ -718,7 +726,7 @@ async function renderTeam(id, stepKey = 'equipe') {
         <h1 class="page-title" id="teamTitle">${esc(draft.name)}</h1>
         <p class="page-sub">${esc([draft.church, draft.district && `Distrito ${draft.district}`].filter(Boolean).join(' · '))}</p>
       </div>
-      <span class="save-state" id="saveState"><i></i>Todas as alterações salvas</span>
+      <span class="save-state desk-only"><i></i><span>Todas as alterações salvas</span></span>
     </div>
     <div class="editor">
       <nav class="card stepper" id="stepper" aria-label="Etapas">${stepperHtml(step.key)}</nav>
@@ -731,9 +739,29 @@ async function renderTeam(id, stepKey = 'equipe') {
             : `<a class="btn btn-gold" href="#/painel">${icon('check')}Concluir</a>`}
         </div>
       </section>
-    </div>`, 'painel');
+    </div>`, 'painel', stepBar(id, stepIndex));
   bindShell();
   bindSection(step.key);
+  centerActiveStep();
+}
+
+// Barra fixa no rodapé do celular: etapa anterior, salvamento e próxima etapa
+function stepBar(id, i) {
+  const prev = STEPS[i - 1];
+  const next = STEPS[i + 1];
+  return `<nav class="step-bar" aria-label="Navegação entre etapas">
+    ${prev ? `<a class="btn btn-ghost" href="#/equipe/${id}/${prev.key}" aria-label="Voltar para ${prev.label}">${icon('arrowLeft')}</a>` : `<a class="btn btn-ghost" href="#/painel" aria-label="Minhas equipes">${icon('home')}</a>`}
+    <div class="step-bar-mid"><strong>Etapa ${i + 1} de ${STEPS.length}</strong><span class="save-state"><i></i><span>Salvo</span></span></div>
+    ${next ? `<a class="btn btn-primary" href="#/equipe/${id}/${next.key}">${next.label}${icon('arrowRight')}</a>` : `<a class="btn btn-gold" href="#/painel">${icon('check')}Concluir</a>`}
+  </nav>`;
+}
+
+function centerActiveStep() {
+  const bar = $('#stepper');
+  const active = $('.step.active', bar);
+  if (bar && active && bar.scrollWidth > bar.clientWidth) {
+    bar.scrollLeft = active.offsetLeft - (bar.clientWidth - active.offsetWidth) / 2;
+  }
 }
 
 function stepperHtml(active) {
@@ -749,7 +777,9 @@ function stepperHtml(active) {
 
 function refreshDerived() {
   const active = ($('.step.active') || {}).dataset?.step;
+  const scroll = $('#stepper').scrollLeft;
   $('#stepper').innerHTML = stepperHtml(active);
+  $('#stepper').scrollLeft = scroll;
   bindStepper();
   $$('[data-derived]').forEach((el) => { el.innerHTML = DERIVED[el.dataset.derived](); });
   $('#teamTitle').textContent = draft.name;
@@ -1013,7 +1043,7 @@ async function renderAdmin(tab = 'geral', force = false) {
         <p class="page-sub">Dados consolidados automaticamente a partir de todas as equipes cadastradas.</p>
         ${firebaseReady ? '' : '<span class="badge warn" style="margin-top:10px">Modo local: dados apenas deste navegador</span>'}
       </div>
-      <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <div class="head-actions">
         <button class="btn btn-ghost" data-refresh>${icon('refresh')}Atualizar</button>
         <button class="btn btn-primary" data-csv>${icon('download')}Exportar planilha</button>
       </div>
@@ -1046,7 +1076,28 @@ async function renderAdmin(tab = 'geral', force = false) {
   });
 }
 
+// Copia o título de cada coluna para as células (usado no layout de cartões do celular)
+function labelTables(root = document) {
+  $$('table.data', root).forEach((table) => {
+    const heads = $$('thead th', table).map((th) => th.textContent.trim());
+    $$('tbody tr, tfoot tr', table).forEach((tr) => {
+      [...tr.children].forEach((td, i) => {
+        if (!heads[i] || td.hasAttribute('colspan')) return;
+        td.dataset.label = heads[i];
+        // Agrupa o conteúdo para ficar em um único bloco à direita do rótulo
+        if (td.childNodes.length > 1 && !td.querySelector(':scope > .td-val')) {
+          const wrap = document.createElement('span');
+          wrap.className = 'td-val';
+          wrap.append(...td.childNodes);
+          td.append(wrap);
+        }
+      });
+    });
+  });
+}
+
 function bindAdminBody() {
+  labelTables();
   $$('[data-team]').forEach((el) => {
     el.onclick = () => { location.hash = `#/admin/equipe/${el.dataset.team}`; };
     el.onkeydown = (e) => { if (e.key === 'Enter') el.click(); };
@@ -1160,7 +1211,7 @@ const ADMIN_VIEWS = {
       ${chartCard('Locais do Calebe', 'Onde cada equipe realizará o Calebe', n ? teams.map((t) => `
         <div class="place"><span class="p-ico">${icon('pin')}</span><div><strong>${esc(t.name)} <span class="muted" style="font-weight:400;font-size:13px">· ${esc(districtOf(t))}</span></strong>
         <p>${t.local.trim() ? esc(t.local) : '<span class="muted">Local ainda não informado</span>'}</p></div></div>`).join('') : '<div class="empty">Nenhuma equipe encontrada.</div>')}
-      ${tableCard('Responsáveis de cada equipe', 'Deslize horizontalmente para ver todas as áreas', `<table class="data">
+      ${tableCard('Responsáveis de cada equipe', 'Nome do responsável por cada área', `<table class="data wide">
         <thead><tr><th>Equipe</th>${RESPONSAVEIS.map((r) => `<th>${r.label}</th>`).join('')}</tr></thead>
         <tbody>${n ? teams.map((t) => `<tr ${rowAttrs(t)}><td>${teamCell(t)}</td>${RESPONSAVEIS.map((r) => `<td style="white-space:nowrap">${t.responsaveis[r.key].trim() ? esc(t.responsaveis[r.key]) : '<span class="muted">—</span>'}</td>`).join('')}</tr>`).join('') : emptyTable(11)}</tbody>
       </table>`)}`;
@@ -1247,7 +1298,7 @@ async function renderAdminTeam(id) {
         ${STEPS.map((st) => `<span class="badge ${s[st.key] >= 1 ? 'ok' : s[st.key] > 0 ? 'gold' : 'muted'}">${s[st.key] >= 1 ? icon('check') : ''}${st.label}</span>`).join('')}
       </div>
       <div class="row-2">
-        ${tableCard(`Participantes (${t.members.length})`, '', `<table class="data"><thead><tr><th>#</th><th>Nome</th><th>Telefone</th></tr></thead>
+        ${tableCard(`Participantes (${t.members.length})`, '', `<table class="data list"><thead><tr><th>#</th><th>Nome</th><th>Telefone</th></tr></thead>
           <tbody>${t.members.length ? t.members.map((m, i) => `<tr><td class="muted">${i + 1}</td><td>${esc(m.name)}</td><td>${esc(m.phone) || '<span class="muted">—</span>'}</td></tr>`).join('') : '<tr><td colspan="3"><div class="empty">Nenhum participante.</div></td></tr>'}</tbody></table>`)}
         ${chartCard('Responsáveis', '', dl(RESPONSAVEIS.map((r) => [r.label, t.responsaveis[r.key].trim() ? esc(t.responsaveis[r.key]) : '<span class="muted">—</span>'])))}
       </div>
@@ -1259,6 +1310,7 @@ async function renderAdminTeam(id) {
       ${chartCard('Local do Calebe', '', `<div class="place" style="padding:0"><span class="p-ico">${icon('pin')}</span><p>${t.local.trim() ? esc(t.local) : '<span class="muted">Local ainda não informado</span>'}</p></div>`)}
     </div>`, 'equipes');
   bindShell();
+  labelTables();
 }
 
 // ---------- Exportação ----------
