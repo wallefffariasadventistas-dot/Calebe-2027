@@ -508,7 +508,6 @@ function renderAuth(mode = 'entrar') {
     <section class="auth-hero">
       <img class="auth-logo" src="assets/logo-calebe.png" alt="Missão Calebe — Minhas férias no topo! Jovens Adventistas">
       <p class="auth-tag">Sistema de acompanhamento <b>Calebe 2027</b></p>
-      <div class="hero-steps">${STEPS.map((s, i) => `<span>${i + 1}. ${s.label}</span>`).join('')}</div>
       <blockquote class="hero-verse">“Dá-me este monte.”<small>Josué 14:12</small></blockquote>
     </section>
     <section class="auth-panel">
