@@ -66,6 +66,7 @@ p { margin: 0; }
 button, input, select, textarea { font: inherit; color: inherit; }
 a { color: var(--navy-600); }
 :focus-visible { outline: 2px solid var(--gold-500); outline-offset: 2px; }
+[hidden] { display: none !important; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 /* ---------- Botões ---------- */
@@ -488,6 +489,19 @@ a { color: var(--navy-600); }
 .leaders-box small { display: block; font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #8a5a1c; }
 .leaders-box strong { font-size: 15.5px; }
 .leaders-box strong span { font-weight: 500; color: var(--ink-2); font-size: 13.5px; }
+
+/* Líderes do distrito (painel do pastor) */
+.leader-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+.leader-card { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px 14px; align-items: center; padding: 18px; }
+.leader-card .who strong { display: block; font-size: 15px; }
+.leader-card .who small { display: block; color: var(--ink-3); font-size: 12.5px; }
+.leader-teams { text-align: center; }
+.leader-teams b { display: block; font-family: var(--serif); font-size: 24px; line-height: 1; }
+.leader-teams small { font-size: 11px; color: var(--ink-3); text-transform: uppercase; letter-spacing: .06em; }
+.leader-team-list { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; padding-top: 12px; border-top: 1px solid var(--line); }
+.leader-team-list a { font-size: 12.5px; font-weight: 600; padding: 4px 10px; border-radius: 99px; background: var(--gold-100); color: #7a4410; text-decoration: none; }
+.leader-team-list a:hover { background: var(--gold-300); }
+.card.empty { padding: 28px 16px; }
 
 /* Relatórios */
 .report-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
