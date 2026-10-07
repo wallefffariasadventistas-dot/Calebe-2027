@@ -1967,4 +1967,14 @@ if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => { navigator.serviceWorker.register('/sw.js').catch(() => {}); });
 }
 app.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
-route().finally(setThemeColor);
+
+// Modo local: carrega a equipe de demonstração automaticamente na primeira abertura
+async function autoDemo() {
+  if (firebaseReady || store.get('calebe.demoSeeded')) return;
+  try {
+    if (!(await data.getUser(DEMO.leader.id))) await seedDemo();
+    store.set('calebe.demoSeeded', true);
+  } catch { /* segue sem a demonstração */ }
+}
+
+autoDemo().finally(() => route().finally(setThemeColor));
