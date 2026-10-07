@@ -205,6 +205,10 @@ a { color: var(--navy-600); }
 }
 .setup-warn svg { width: 20px; height: 20px; flex: none; color: var(--warn); margin-top: 1px; }
 .setup-warn strong { display: block; margin-bottom: 2px; }
+.setup-warn > div { min-width: 0; }
+.demo-btn { margin-top: 10px; background: #fff; white-space: normal; height: auto; min-height: 36px; padding: 6px 12px; text-align: left; max-width: 100%; }
+.demo-info { margin-top: 10px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.demo-info button { border: 0; background: rgba(255,255,255,.7); border-radius: 6px; padding: 1px 6px; font-weight: 700; color: #5c3b00; cursor: pointer; text-decoration: underline; }
 .notice-free { margin-top: 20px; font-size: 12.5px; color: var(--ink-3); text-align: center; }
 
 /* ---------- Estrutura do app ---------- */

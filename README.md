@@ -27,6 +27,8 @@ vercel.json             Configuração do Vercel
 
 Enquanto o arquivo não for preenchido, o site funciona em **modo local**: os dados ficam salvos apenas no navegador de quem está usando (útil para testar). Depois de preencher, o site passa a usar o Firestore automaticamente.
 
+**Equipe de demonstração (modo local):** na tela de entrada, o botão "Carregar equipe de demonstração" cria a *Equipe Monte Sião* (distrito Parque Piauí) com líder, 10 participantes, responsáveis, treinamento, divulgação e ações. Entre como líder com (86) 98800-2002, como pastor com (86) 98800-1001 ou pela Área do Administrador. O botão não aparece quando o Firebase está conectado.
+
 ## Funcionalidades
 
 **Acesso e permissões (sem senha nesta fase)**
@@ -51,7 +53,7 @@ As alterações são salvas automaticamente. O progresso de cada etapa aparece e
 
 **Área do Administrador**
 - **Visão geral**: equipes cadastradas, Calebes inscritos, alvo total de batismos, alvo de estudantes da Bíblia, equipes e Calebes por distrito, andamento, treinamentos e meios de divulgação.
-- **Equipes**: tabela com totais. Clique em uma equipe para ver todos os detalhes.
+- **Equipes**: tabela com totais. Clique em uma equipe para ver a ficha completa e baixar o **relatório da equipe em PDF**. Datas já passadas aparecem como *realizado* e as futuras como *agendado*.
 - **Evangelismo**: totais, médias, batismos e estudos por equipe e por distrito.
 - **Estrutura**: treinamentos (com datas), locais e responsáveis de cada equipe.
 - **Divulgação**: quantidade de equipes por meio de divulgação e agenda de datas.
