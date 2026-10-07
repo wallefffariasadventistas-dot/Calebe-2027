@@ -658,10 +658,95 @@ async function bindDistrictChoice() {
 
 function checkStorage() {
   const box = $('#storageWarn');
-  if (!firebaseReady && box) {
-    box.innerHTML = `<div class="setup-warn">${icon('alert')}<div><strong>Modo local (teste)</strong>
-      <p>O banco de dados ainda não foi conectado. Os cadastros ficam salvos apenas neste navegador e aparecem só neste aparelho.</p></div></div>`;
+  if (firebaseReady || !box) return;
+  box.innerHTML = `<div class="setup-warn">${icon('alert')}<div><strong>Modo local (teste)</strong>
+    <p>O banco de dados ainda não foi conectado. Os cadastros ficam salvos apenas neste navegador e aparecem só neste aparelho.</p>
+    <button class="btn btn-sm btn-ghost demo-btn" data-demo>${icon('sparkle')}Carregar equipe de demonstração</button>
+    <div id="demoInfo"></div></div></div>`;
+  const showInfo = () => {
+    $('#demoInfo').innerHTML = `<div class="demo-info">
+      <b>Equipe de demonstração carregada.</b> Para ver:
+      <span>Líder: entre com <button type="button" data-fill="${DEMO.leader.phone}">${DEMO.leader.phone}</button></span>
+      <span>Pastor: entre com <button type="button" data-fill="${DEMO.pastor.phone}">${DEMO.pastor.phone}</button></span>
+      <span>Administrador: use o botão "Área do Administrador".</span></div>`;
+    $$('[data-fill]').forEach((b) => (b.onclick = () => {
+      // No modo "Cadastrar" o campo é outro: volta para "Entrar" antes de preencher
+      if ($('#authForm [name="name"]')) { location.hash = '#/entrar'; setTimeout(() => fillPhone(b.dataset.fill), 300); } else fillPhone(b.dataset.fill);
+    }));
+  };
+  data.getUser(DEMO.leader.id).then((u) => { if (u) showInfo(); }).catch(() => {});
+  $('[data-demo]').onclick = async () => {
+    try {
+      await seedDemo();
+      showInfo();
+      toast('Equipe de demonstração carregada!');
+    } catch (err) { toast(err.message, 'error'); }
+  };
+}
+
+function fillPhone(phone) {
+  const input = $('#authForm [name="phone"]');
+  if (input) { input.value = phone; input.focus(); }
+}
+
+const DEMO = {
+  district: 'Parque Piauí',
+  pastor: { id: 'demo-pastor', name: 'Pr. Daniel Araújo', phone: '(86) 98800-1001' },
+  leader: { id: 'demo-lider', name: 'Rafael Monteiro', phone: '(86) 98800-2002', church: 'IASD Parque Piauí' },
+  team: 'demo-equipe',
+};
+
+// Cria pastor, líder e uma equipe completa (somente no modo local, para demonstração)
+async function seedDemo() {
+  const now = new Date().toISOString();
+  const pastorSnap = await getDocs(query(collection(db, USERS), where('district', '==', DEMO.district), where('role', '==', 'pastor')));
+  if (pastorSnap.empty || pastorSnap.docs[0].id === DEMO.pastor.id) {
+    await setDoc(doc(db, USERS, DEMO.pastor.id), {
+      name: DEMO.pastor.name, phone: DEMO.pastor.phone, phoneDigits: onlyDigits(DEMO.pastor.phone),
+      role: 'pastor', church: '', district: DEMO.district, createdAt: now,
+    });
   }
+  await setDoc(doc(db, USERS, DEMO.leader.id), {
+    name: DEMO.leader.name, phone: DEMO.leader.phone, phoneDigits: onlyDigits(DEMO.leader.phone),
+    role: 'lider', church: DEMO.leader.church, district: DEMO.district, createdAt: now,
+  });
+  const people = [
+    ['Rafael Monteiro', '(86) 98800-2002', 'lider'],
+    ['Beatriz Nogueira', '(86) 99412-3301'], ['Lucas Ferreira', '(86) 99523-4412'],
+    ['Mariana Castro', '(86) 98134-5523'], ['Gabriel Sousa', '(86) 99645-6634'],
+    ['Júlia Alencar', '(86) 98756-7745'], ['Pedro Henrique Lima', '(86) 99867-8856'],
+    ['Larissa Rocha', '(86) 98978-9967'], ['Thiago Barbosa', '(86) 99189-1078'],
+    ['Camila Ribeiro', '(86) 98290-2189'], ['Davi Carvalho', '(86) 99301-3290'],
+  ];
+  await setDoc(doc(db, TEAMS, DEMO.team), {
+    name: 'Equipe Monte Sião',
+    church: DEMO.leader.church,
+    district: DEMO.district,
+    ownerId: DEMO.leader.id,
+    members: people.map(([name, phone, role]) => ({ name, phone, role: role || 'participante' })),
+    responsaveis: {
+      visitacao: 'Beatriz Nogueira', pregador: 'Rafael Monteiro', louvor: 'Júlia Alencar', criancas: 'Mariana Castro',
+      sonoplastia: 'Gabriel Sousa', recepcao: 'Larissa Rocha', midia: 'Lucas Ferreira', apoio: 'Thiago Barbosa',
+      brindes: 'Camila Ribeiro', lanche: 'Pedro Henrique Lima',
+    },
+    treinamentos: {
+      outubro: { done: true, date: '2026-10-04' },
+      novembro: { done: false, date: '' },
+      dezembro: { done: false, date: '' },
+    },
+    local: 'Escola Municipal Professora Maria do Socorro — Rua 12, Quadra 40, Parque Piauí, Teresina - PI (ao lado da praça do bairro).',
+    divulgacao: {
+      faixa: { use: true, date: '2026-10-05' },
+      convites: { use: true, date: '2026-10-18' },
+      carroSom: { use: true, date: '2026-11-07' },
+      redesSociais: { use: true, date: '2026-10-01' },
+    },
+    alvoBatismo: 12,
+    alvoEstudos: 30,
+    acoes: { sopao: '2026-10-03', mutirao: '2026-11-14', feiraSaude: '2027-01-16' },
+    createdAt: now,
+    updatedAt: now,
+  });
 }
 
 function bindPhoneMask(input) {
@@ -1234,9 +1319,21 @@ function teamCell(t) {
 }
 const rowAttrs = (t) => `class="link" data-team="${t.id}" tabindex="0"`;
 const dateCell = (iso) => (iso ? fmtDate(iso) : '<span class="muted">—</span>');
+
+// Datas já passadas contam como realizadas; futuras como agendadas
+function todayISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+const isDone = (iso) => !!iso && iso <= todayISO();
+const situacao = (iso) => (!iso ? 'Sem data' : isDone(iso) ? 'Realizado' : 'Agendado');
+const dateStatus = (iso) => (!iso ? '<span class="muted">—</span>' : isDone(iso)
+  ? `<span class="badge ok" title="Realizado">${icon('check')}${fmtDate(iso)} · realizado</span>`
+  : `<span class="badge gold" title="Agendado">${icon('calendar')}${fmtDate(iso)} · agendado</span>`);
+
 const actionDateCell = (t, a) => {
   const iso = t.acoes[a.key];
-  if (!iso || inRange(iso, a.min, a.max)) return dateCell(iso);
+  if (!iso || inRange(iso, a.min, a.max)) return dateStatus(iso);
   return `<span class="badge warn" title="Fora do mês previsto">${icon('alert')}${fmtDate(iso)}</span>`;
 };
 const tableCard = (title, sub, table) => `<div class="card"><div class="card-head"><div><div class="card-title">${title}</div>${sub ? `<div class="card-sub">${sub}</div>` : ''}</div></div><div class="card-body" style="padding-left:0;padding-right:0;padding-bottom:0"><div class="table-wrap">${table}</div></div></div>`;
@@ -1417,6 +1514,7 @@ async function renderTeamDetail(id) {
         <p class="page-sub">${esc(t.church || '')}${t.owner ? ` · Cadastrada por ${esc(t.owner.name)} (${t.owner.role === 'pastor' ? 'Pastor' : 'Líder'}, ${esc(t.owner.phone)})` : ''}</p>
       </div>
       <div class="head-actions">
+        <button class="btn btn-ghost" data-team-pdf>${icon('download')}Relatório da equipe (PDF)</button>
         ${canEdit(t) ? `<a class="btn btn-primary" href="#/equipe/${t.id}">${icon('arrowRight')}Editar equipe</a>` : ''}
         ${ring(progress(t), 'lg')}
       </div>
@@ -1440,13 +1538,25 @@ async function renderTeamDetail(id) {
       </div>
       <div class="row-3">
         ${chartCard('Treinamento', '', dl(TREINAMENTOS.map((m) => [m.label, t.treinamentos[m.key].done ? `<span class="badge ok">${icon('check')}${t.treinamentos[m.key].date ? fmtDate(t.treinamentos[m.key].date) : 'Realizado'}</span>` : '<span class="badge muted">Pendente</span>'])))}
-        ${chartCard('Divulgação', '', dl(DIVULGACAO.map((d) => [d.label, t.divulgacao[d.key].use ? `<span class="badge ok">${icon('check')}${t.divulgacao[d.key].date ? fmtDate(t.divulgacao[d.key].date) : 'Sem data'}</span>` : '<span class="muted">Não</span>'])))}
+        ${chartCard('Divulgação', '', dl(DIVULGACAO.map((d) => [d.label, t.divulgacao[d.key].use ? (t.divulgacao[d.key].date ? dateStatus(t.divulgacao[d.key].date) : '<span class="badge muted">Sem data</span>') : '<span class="muted">Não utilizará</span>'])))}
         ${chartCard('Ações na localidade', '', dl(ACOES.map((a) => [a.label, actionDateCell(t, a)])))}
       </div>
       ${chartCard('Local do Calebe', '', `<div class="place" style="padding:0"><span class="p-ico">${icon('pin')}</span><p>${t.local.trim() ? esc(t.local) : '<span class="muted">Local ainda não informado</span>'}</p></div>`)}
     </div>`, 'equipes');
   bindShell();
   labelTables();
+  $('[data-team-pdf]').onclick = async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    try {
+      await exportTeamPdf(t);
+      toast('Relatório gerado.');
+    } catch (err) {
+      toast(err.message || 'Não foi possível gerar o relatório.', 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  };
 }
 
 // ---------- Relatórios (administrador) ----------
@@ -1638,6 +1748,102 @@ async function logoDataUrl() {
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
   return canvas.toDataURL('image/jpeg', 0.9);
+}
+
+async function newPdf(orientation, title, subtitle) {
+  await loadScript('assets/vendor/jspdf.umd.min.js');
+  await loadScript('assets/vendor/jspdf.plugin.autotable.min.js');
+  const { jsPDF } = window.jspdf;
+  const pdf = new jsPDF({ orientation, unit: 'mm', format: 'a4' });
+  const W = pdf.internal.pageSize.getWidth();
+  pdf.setFillColor(232, 146, 45);
+  pdf.rect(0, 0, W, 30, 'F');
+  const logo = await logoDataUrl().catch(() => null);
+  if (logo) pdf.addImage(logo, 'JPEG', 10, 3.5, 31, 23);
+  pdf.setTextColor(63, 26, 20);
+  pdf.setFont('helvetica', 'bold');
+  pdf.setFontSize(16);
+  pdf.text(title, 46, 13);
+  pdf.setFont('helvetica', 'normal');
+  pdf.setFontSize(10);
+  pdf.text(subtitle, 46, 20);
+  return pdf;
+}
+
+const PDF_TABLE = {
+  styles: { font: 'helvetica', fontSize: 9, cellPadding: 2.2, textColor: [33, 22, 15], lineColor: [231, 226, 214], lineWidth: 0.1 },
+  headStyles: { fillColor: [63, 26, 20], textColor: [255, 244, 228], fontStyle: 'bold' },
+  alternateRowStyles: { fillColor: [250, 247, 241] },
+  margin: { left: 12, right: 12, bottom: 16 },
+};
+
+function pdfFooter(pdf) {
+  const pages = pdf.internal.getNumberOfPages();
+  for (let i = 1; i <= pages; i += 1) {
+    pdf.setPage(i);
+    const W = pdf.internal.pageSize.getWidth();
+    const H = pdf.internal.pageSize.getHeight();
+    pdf.setFontSize(8);
+    pdf.setTextColor(139, 123, 113);
+    pdf.text(`Missão Calebe · Jovens Adventistas · página ${i} de ${pages}`, W / 2, H - 6, { align: 'center' });
+  }
+}
+
+// Relatório completo de uma equipe (todas as etapas)
+async function exportTeamPdf(t) {
+  const leaders = leadersOf(t);
+  const pastor = pastorOf(t.district);
+  const pdf = await newPdf('portrait', `Relatório da equipe · ${t.name}`,
+    `Distrito ${districtOf(t)} · ${t.members.length} Calebes · progresso ${progress(t)}% · gerado em ${new Date().toLocaleDateString('pt-BR')}`);
+  const H = pdf.internal.pageSize.getHeight();
+  let y = 38;
+  const section = (title, head, body, extra = {}) => {
+    if (y > H - 40) { pdf.addPage(); y = 18; }
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(12);
+    pdf.setTextColor(63, 26, 20);
+    pdf.text(title, 12, y);
+    pdf.autoTable({ ...PDF_TABLE, startY: y + 3, head: head ? [head] : undefined, body, ...extra });
+    y = pdf.lastAutoTable.finalY + 10;
+  };
+  const kv = { columnStyles: { 0: { fontStyle: 'bold', cellWidth: 55, fillColor: [250, 247, 241] } }, alternateRowStyles: {} };
+
+  section('Dados da equipe', null, [
+    ['Equipe', t.name],
+    ['Distrito', districtOf(t)],
+    ['Igreja', t.church || '—'],
+    ['Pastor do distrito', pastor ? `${pastor.name} · ${pastor.phone}` : '—'],
+    [leaders.length === 1 ? 'Líder da equipe' : 'Líderes da equipe', leaders.length ? leaders.map((m) => `${m.name}${m.phone ? ` · ${m.phone}` : ''}`).join('\n') : '—'],
+    ['Cadastrada por', t.owner ? `${t.owner.name} (${t.owner.role === 'pastor' ? 'Pastor' : 'Líder'})` : '—'],
+    ['Calebes inscritos', `${t.members.length} (${leaders.length} ${leaders.length === 1 ? 'líder' : 'líderes'} · ${t.members.length - leaders.length} participantes)`],
+    ['Alvo de batismo', String(t.alvoBatismo)],
+    ['Estudos bíblicos', String(t.alvoEstudos)],
+    ['Local do Calebe', t.local || '—'],
+  ], kv);
+
+  section('Participantes', ['#', 'Nome', 'Telefone', 'Função'],
+    t.members.length ? t.members.map((m, i) => [String(i + 1), m.name, m.phone || '—', FUNCOES[m.role]]) : [[{ content: 'Nenhum participante cadastrado.', colSpan: 4 }]],
+    { columnStyles: { 0: { cellWidth: 10 } }, didParseCell: (c) => {
+      if (c.section === 'body' && c.row.raw[3] === 'Líder') { c.cell.styles.fillColor = [253, 235, 210]; c.cell.styles.fontStyle = 'bold'; }
+    } });
+
+  section('Responsáveis', ['Área', 'Responsável'], RESPONSAVEIS.map((r) => [r.label, t.responsaveis[r.key] || '—']));
+
+  section('Treinamentos', ['Mês', 'Situação', 'Data'], TREINAMENTOS.map((m) => {
+    const v = t.treinamentos[m.key];
+    return [m.label, v.done ? 'Realizado' : 'Pendente', fmtDate(v.date) || '—'];
+  }));
+
+  section('Divulgação', ['Meio', 'Utilizará', 'Data', 'Situação'], DIVULGACAO.map((d) => {
+    const v = t.divulgacao[d.key];
+    return [d.label, v.use ? 'Sim' : 'Não', v.use ? fmtDate(v.date) || '—' : '—', v.use ? situacao(v.date) : '—'];
+  }));
+
+  section('Ações na localidade', ['Ação', 'Data', 'Situação'], ACOES.map((a) => [a.label, fmtDate(t.acoes[a.key]) || '—', situacao(t.acoes[a.key])]));
+
+  pdfFooter(pdf);
+  const slug = t.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  pdf.save(`calebe-2027-relatorio-${slug}-${new Date().toISOString().slice(0, 10)}.pdf`);
 }
 
 async function exportPdf(kind, teams) {
