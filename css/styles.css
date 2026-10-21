@@ -243,6 +243,9 @@ a.avatar { text-decoration: none; }
 .menu-links a svg { width: 19px; height: 19px; color: var(--gold-600); flex: none; }
 .menu-links a.active { background: var(--gold-100); border-color: var(--gold-300); }
 .menu-logout { margin-top: 10px; height: 46px; }
+.check-line { display: flex; gap: 10px; align-items: flex-start; margin-top: 14px; padding: 12px 14px; border-radius: 12px; background: var(--danger-bg); border: 1px solid #efc6c2; cursor: pointer; font-size: 14px; font-weight: 600; }
+.check-line input { width: 18px; height: 18px; margin-top: 2px; accent-color: var(--danger); flex: none; }
+.check-line small { display: block; font-weight: 400; color: var(--ink-2); margin-top: 2px; }
 .info-box { display: flex; gap: 14px; padding: 16px 20px; border-radius: var(--radius); background: #eef6f1; border: 1px solid #b9dcc8; color: #1d4a33; }
 .info-box svg { width: 24px; height: 24px; flex: none; color: var(--ok); }
 .info-box p { font-size: 13.5px; margin-top: 4px; }
