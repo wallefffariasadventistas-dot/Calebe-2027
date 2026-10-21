@@ -19,6 +19,9 @@ vercel.json             Configuração do Vercel
 
 ## Configurar o Firebase (uma vez)
 
+O projeto já está ligado ao Firebase **calebempi** (`js/firebase-config.js`). Falta apenas publicar as regras do Firestore (passo 3).
+
+
 1. Em https://console.firebase.google.com crie o projeto (ex.: `calebe-2027`).
 2. **Firestore Database → Criar banco de dados** (modo produção, região `southamerica-east1`).
 3. **Firestore → Regras**: cole o conteúdo de `firestore.rules` e publique.
