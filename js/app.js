@@ -317,6 +317,15 @@ const data = {
   }),
 
   // Administrador define a senha de um pastor ou líder
+  // Administrador apaga um cadastro (e, se pedir, as equipes cadastradas pela pessoa)
+  deleteUser: (id, withTeams) => guard(async () => {
+    if (withTeams) {
+      const own = await getDocs(query(collection(db, TEAMS), where('ownerId', '==', id)));
+      await Promise.all(own.docs.map((d) => deleteDoc(doc(db, TEAMS, d.id))));
+    }
+    await deleteDoc(doc(db, USERS, id));
+  }),
+
   setUserPin: (id, pin) => guard(async () => {
     if (!isPin(pin)) throw fail('A senha precisa ter exatamente 6 números.');
     await updateDoc(doc(db, USERS, id), { pin });
@@ -2037,18 +2046,51 @@ ADMIN_VIEWS.usuarios = () => {
       <div class="pin-actions">${pinCell(adminPinCache, 'admin')}</div>
     </div>
     ${tableCard(`Usuários cadastrados (${users.length})`, 'Pastores e líderes com suas senhas. Toque no olho para ver a senha.', `<table class="data">
-      <thead><tr><th>Nome</th><th>Distrito</th><th>Telefone</th><th>Cadastro</th><th>Senha</th></tr></thead>
+      <thead><tr><th>Nome</th><th>Distrito</th><th>Telefone</th><th>Cadastro</th><th>Senha</th><th></th></tr></thead>
       <tbody>${users.length ? users.map((u) => `<tr>
         <td><div class="t-name"><strong>${esc(u.name)}</strong><small><span class="badge ${u.role === 'pastor' ? 'navy' : 'gold'}">${u.role === 'pastor' ? 'Pastor' : 'Líder'}</span></small></div></td>
         <td>${esc(u.district || '—')}${u.church ? `<br><small class="muted">${esc(u.church)}</small>` : ''}</td>
         <td>${u.phoneDigits ? `<a href="https://wa.me/55${esc(u.phoneDigits)}" target="_blank" rel="noopener">${esc(u.phone)}</a>` : esc(u.phone || '—')}</td>
         <td>${u.createdAt ? fmtDate(u.createdAt.slice(0, 10)) : '—'}</td>
         <td><div class="pin-actions">${pinCell(u.pin, u.id)}</div></td>
-      </tr>`).join('') : '<tr><td colspan="5"><div class="empty">Nenhum usuário encontrado.</div></td></tr>'}</tbody>
+        <td><button class="btn btn-sm btn-danger" data-del-user="${esc(u.id)}">${icon('trash')}Apagar</button></td>
+      </tr>`).join('') : '<tr><td colspan="6"><div class="empty">Nenhum usuário encontrado.</div></td></tr>'}</tbody>
     </table>`)}`;
 };
 
 function bindUsers() {
+  $$('[data-del-user]').forEach((b) => (b.onclick = () => {
+    const u = overview.users.find((x) => x.id === b.dataset.delUser);
+    if (!u) return;
+    const own = overview.teams.filter((t) => t.ownerId === u.id);
+    const role = u.role === 'pastor' ? 'Pastor' : 'Líder';
+    modal(`<h3>Apagar cadastro?</h3>
+      <p class="sub"><b>${esc(u.name)}</b> (${role} · ${esc(u.district || '')}) não poderá mais entrar no sistema. Esta ação não pode ser desfeita.</p>
+      ${u.role === 'pastor' ? '<p class="sub">O distrito ficará livre para outro pastor se cadastrar.</p>' : ''}
+      ${own.length ? `<label class="check-line"><input type="checkbox" name="withTeams">
+        <span>Apagar também ${own.length === 1 ? 'a equipe cadastrada' : `as ${own.length} equipes cadastradas`} por esta pessoa
+        <small>${esc(own.map((t) => t.name).join(', '))}. Se não marcar, ${own.length === 1 ? 'ela continua' : 'elas continuam'} no distrito e o pastor pode editá-${own.length === 1 ? 'la' : 'las'}.</small></span></label>` : ''}
+      <div class="actions" style="margin-top:20px">
+        <button type="button" class="btn btn-ghost" data-no>Cancelar</button>
+        <button type="button" class="btn btn-primary" data-yes style="background:var(--danger)">${icon('trash')}Apagar cadastro</button>
+      </div>`, (el, close) => {
+      $('[data-no]', el).onclick = close;
+      $('[data-yes]', el).onclick = async (e) => {
+        e.currentTarget.disabled = true;
+        const withTeams = !!$('input[name="withTeams"]', el)?.checked;
+        try {
+          await data.deleteUser(u.id, withTeams);
+          close();
+          toast(`Cadastro de ${u.name} apagado.`);
+          await renderOverview('usuarios', true);
+        } catch (err) {
+          toast(err.message, 'error');
+          e.currentTarget.disabled = false;
+        }
+      };
+    });
+  }));
+
   $$('[data-show-pin]').forEach((b) => (b.onclick = () => {
     const box = b.closest('.pin-view');
     const code = $('code', box);
