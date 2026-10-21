@@ -10,12 +10,13 @@ import {
 // Configuração do projeto Firebase do Calebe 2027.
 // Firebase Console → Configurações do projeto → Seus apps → App da Web → firebaseConfig
 const firebaseConfig = {
-  apiKey: "COLE_AQUI",
-  authDomain: "COLE_AQUI",
-  projectId: "COLE_AQUI",
-  storageBucket: "COLE_AQUI",
-  messagingSenderId: "COLE_AQUI",
-  appId: "COLE_AQUI"
+  apiKey: "AIzaSyDlPgEOkP14Akx6BZg62rK-oLa2GCQyevA",
+  authDomain: "calebempi.firebaseapp.com",
+  projectId: "calebempi",
+  storageBucket: "calebempi.firebasestorage.app",
+  messagingSenderId: "925226796829",
+  appId: "1:925226796829:web:4a2663ef650e00adb183f4",
+  measurementId: "G-075CJ3B7NH"
 };
 
 export const firebaseReady = !firebaseConfig.apiKey.startsWith("COLE_");
