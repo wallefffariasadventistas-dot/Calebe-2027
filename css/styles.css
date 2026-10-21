@@ -221,6 +221,17 @@ a { color: var(--navy-600); }
 .auth-link.as-button { border: 0; background: transparent; cursor: pointer; margin-top: 12px; width: 100%; font-family: inherit; }
 a.admin-link { text-decoration: none; color: inherit; }
 a.avatar { text-decoration: none; }
+/* Senhas (área do administrador) */
+.pin-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.pin-view { display: inline-flex; align-items: center; gap: 2px; }
+.pin-view code { font: 600 15px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; padding: 6px 8px; border-radius: 8px; background: var(--surface-2); border: 1px solid var(--line); min-width: 86px; text-align: center; }
+.icon-btn.plain:hover { background: var(--surface-2); color: var(--ink); }
+.admin-pin-card { display: flex; align-items: center; gap: 14px; padding: 16px 20px; flex-wrap: wrap; }
+.admin-pin-card strong { display: block; }
+.admin-pin-card small { color: var(--ink-3); font-size: 12.5px; }
+.admin-pin-card .pin-actions { margin-left: auto; }
+.input.pin { letter-spacing: .3em; font-weight: 600; }
+.input.pin::placeholder { letter-spacing: .2em; }
 .info-box { display: flex; gap: 14px; padding: 16px 20px; border-radius: var(--radius); background: #eef6f1; border: 1px solid #b9dcc8; color: #1d4a33; }
 .info-box svg { width: 24px; height: 24px; flex: none; color: var(--ok); }
 .info-box p { font-size: 13.5px; margin-top: 4px; }

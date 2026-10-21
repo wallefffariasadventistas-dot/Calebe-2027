@@ -4,9 +4,7 @@
    ========================================================= */
 
 import {
-  db, auth, collection, doc, addDoc, setDoc, getDoc, getDocs, deleteDoc, query, where, writeBatch,
-  onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut,
-  updatePassword, reauthenticateWithCredential, EmailAuthProvider, sendPasswordResetEmail, deleteUser,
+  db, collection, doc, addDoc, setDoc, getDoc, getDocs, deleteDoc, updateDoc, query, where,
 } from './firebase-config.js';
 
 // ---------- Configuração ----------
@@ -180,22 +178,20 @@ function toast(message, type = '') {
 
 // ---------- Sessão e API ----------
 
-// Sessão definida pelo login do Firebase: { kind: 'user' | 'admin', user }
+// Sessão: { kind: 'user' | 'admin', user }. Fica salva neste aparelho até a pessoa sair.
 let session = null;
+const SESSION_KEY = 'calebe.session';
 
 function setSession(s) {
   session = s;
+  store.set(SESSION_KEY, s ? { kind: s.kind, id: s.user.id } : null);
 }
-
-// Conta do administrador (a mesma usada nas regras do Firestore)
-const ADMIN_EMAIL = 'admin@calebe2027.app';
 
 // ---------- Dados (Firestore) ----------
 
 const USERS = 'calebe_usuarios';
 const TEAMS = 'calebe_equipes';
-const LOGINS = 'calebe_logins';     // telefone → e-mail (para entrar com o telefone)
-const PASTORES = 'calebe_pastores'; // um documento por distrito: garante um único pastor
+const CONFIG = 'calebe_config';     // senha do administrador (documento "admin")
 
 const clean = (v, max = 160) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 const onlyDigits = (v) => String(v || '').replace(/\D/g, '');
@@ -208,48 +204,26 @@ const cleanInt = (v) => {
 function fail(message) { return new Error(message); }
 
 // Traduz erros do Firebase para mensagens claras
-const AUTH_ERRORS = {
-  'auth/invalid-credential': 'Telefone, e-mail ou senha incorretos.',
-  'auth/invalid-login-credentials': 'Telefone, e-mail ou senha incorretos.',
-  'auth/wrong-password': 'Senha incorreta.',
-  'auth/user-not-found': 'Cadastro não encontrado.',
-  'auth/invalid-email': 'E-mail inválido.',
-  'auth/email-already-in-use': 'Este e-mail já está cadastrado. Use "Entrar" ou "Esqueci minha senha".',
-  'auth/weak-password': 'A senha precisa ter pelo menos 6 caracteres.',
-  'auth/too-many-requests': 'Muitas tentativas. Aguarde alguns minutos e tente novamente.',
-  'auth/network-request-failed': 'Sem conexão. Verifique sua internet.',
-  'auth/requires-recent-login': 'Por segurança, saia e entre novamente antes de trocar a senha.',
-  'auth/operation-not-allowed': 'O login por e-mail e senha ainda não foi ativado no Firebase.',
-  'auth/configuration-not-found': 'O login por e-mail e senha ainda não foi ativado no Firebase.',
-};
-
 async function guard(fn) {
   try {
     return await fn();
   } catch (err) {
-    if (err && AUTH_ERRORS[err.code]) throw fail(AUTH_ERRORS[err.code]);
-    if (err && err.code === 'permission-denied') throw fail('Você não tem permissão para acessar estes dados.');
+    if (err && err.code === 'permission-denied') throw fail('Sem permissão no banco de dados. Verifique as regras do Firestore.');
     if (err && err.code === 'unavailable') throw fail('Sem conexão com o banco de dados. Verifique sua internet.');
     throw err instanceof Error && !err.code ? err : fail('Não foi possível concluir a operação. Tente novamente.');
   }
 }
 
-// Aceita telefone ou e-mail e devolve o e-mail da conta
-async function resolveEmail(identifier) {
-  const value = clean(identifier, 160);
-  if (!value) throw fail('Informe o telefone ou e-mail.');
-  if (value.includes('@')) return value.toLowerCase();
-  const digits = onlyDigits(value);
-  if (digits.length < 8) throw fail('Informe um telefone ou e-mail válido.');
-  const snap = await getDoc(doc(db, LOGINS, digits));
-  if (!snap.exists()) throw fail('Nenhum cadastro encontrado com este telefone.');
-  return snap.data().email;
+// Senha de 6 números
+const isPin = (v) => /^\d{6}$/.test(String(v || ''));
+function checkNewPin(pin, confirm) {
+  if (!isPin(pin)) throw fail('A senha precisa ter exatamente 6 números.');
+  if (pin !== confirm) throw fail('As senhas não conferem.');
 }
 
-const isEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+
 
 const withId = (snap) => ({ id: snap.id, ...snap.data() });
-const stripId = ({ id, ...rest }) => rest;
 const byCreated = (a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
 
 function sanitizeTeam(t) {
@@ -275,80 +249,78 @@ function sanitizeTeam(t) {
 }
 
 const data = {
-  // Cadastro de pastor ou líder: cria a conta (e-mail e senha) e os dados do cadastro
+  // Cadastro de pastor ou líder com senha de 6 números
   register: (input) => guard(async () => {
     const name = clean(input.name, 120);
     const phone = clean(input.phone, 30);
     const digits = onlyDigits(phone);
-    const email = clean(input.email, 160).toLowerCase();
-    const password = String(input.password || '');
     const role = input.role === 'pastor' || input.role === 'lider' ? input.role : '';
     const district = DISTRITOS.includes(input.district) ? input.district : '';
     if (!name || !role || digits.length < 8) throw fail('Informe nome, função e um telefone válido.');
-    if (!isEmail(email)) throw fail('Informe um e-mail válido. Ele será usado para recuperar a senha.');
-    if (password.length < 6) throw fail('A senha precisa ter pelo menos 6 caracteres.');
-    if (password !== String(input.password2 || '')) throw fail('As senhas não conferem.');
     if (!district) throw fail('Escolha o seu distrito.');
     const church = role === 'lider' ? clean(input.church, 120) : '';
     if (role === 'lider' && !church) throw fail('Informe a sua igreja.');
-    if ((await getDoc(doc(db, LOGINS, digits))).exists()) throw fail('Já existe um cadastro com este telefone. Use "Entrar".');
+    checkNewPin(input.pin, input.pin2);
+    const dup = await getDocs(query(collection(db, USERS), where('phoneDigits', '==', digits)));
+    if (!dup.empty) throw fail('Já existe um cadastro com este telefone. Use "Entrar".');
     if (role === 'pastor') {
-      const pastor = await getDoc(doc(db, PASTORES, district));
-      if (pastor.exists()) throw fail(`O distrito ${district} já possui pastor cadastrado (${pastor.data().name}).`);
+      const pastor = await getDocs(query(collection(db, USERS), where('district', '==', district), where('role', '==', 'pastor')));
+      if (!pastor.empty) throw fail(`O distrito ${district} já possui pastor cadastrado (${pastor.docs[0].data().name}).`);
     }
+    const user = { name, phone, phoneDigits: digits, role, church, district, pin: input.pin, createdAt: new Date().toISOString() };
+    const ref = await addDoc(collection(db, USERS), user);
+    return { id: ref.id, ...user };
+  }),
 
-    const cred = await createUserWithEmailAndPassword(auth, email, password);
-    const uid = cred.user.uid;
-    const user = { name, phone, phoneDigits: digits, email, role, church, district, createdAt: new Date().toISOString() };
-    try {
-      // Tudo de uma vez: se o distrito ganhar pastor no meio do caminho, nada é gravado
-      const batch = writeBatch(db);
-      batch.set(doc(db, USERS, uid), user);
-      batch.set(doc(db, LOGINS, digits), { uid, email });
-      if (role === 'pastor') batch.set(doc(db, PASTORES, district), { uid, name });
-      await batch.commit();
-    } catch (err) {
-      await deleteUser(cred.user).catch(() => {});
-      if (err && err.code === 'permission-denied') {
-        throw fail(role === 'pastor' ? `O distrito ${district} já possui pastor cadastrado.` : 'Já existe um cadastro com este telefone.');
-      }
-      throw err;
+  login: (phone, pin) => guard(async () => {
+    const digits = onlyDigits(phone);
+    if (digits.length < 8) throw fail('Informe o telefone do cadastro.');
+    if (!isPin(pin)) throw fail('A senha tem 6 números.');
+    const snap = await getDocs(query(collection(db, USERS), where('phoneDigits', '==', digits)));
+    if (snap.empty) throw fail('Nenhum cadastro encontrado com este telefone.');
+    const user = withId(snap.docs[0]);
+    if (user.pin !== pin) throw fail('Senha incorreta. Se esqueceu, fale com o administrador.');
+    return user;
+  }),
+
+  // Administrador: a senha fica em calebe_config/admin
+  adminPin: () => guard(async () => {
+    const snap = await getDoc(doc(db, CONFIG, 'admin'));
+    return snap.exists() ? snap.data().pin || null : null;
+  }),
+
+  adminSetup: (pin, confirm) => guard(async () => {
+    checkNewPin(pin, confirm);
+    if ((await getDoc(doc(db, CONFIG, 'admin'))).exists()) throw fail('A senha do administrador já foi criada. Use "Entrar".');
+    await setDoc(doc(db, CONFIG, 'admin'), { pin, updatedAt: new Date().toISOString() });
+  }),
+
+  adminLogin: (pin) => guard(async () => {
+    if (!isPin(pin)) throw fail('A senha tem 6 números.');
+    const current = await data.adminPin();
+    if (!current) throw fail('A senha do administrador ainda não foi criada.');
+    if (current !== pin) throw fail('Senha do administrador incorreta.');
+  }),
+
+  // Troca da própria senha (confere a atual antes)
+  changePin: (current, next, confirm) => guard(async () => {
+    checkNewPin(next, confirm);
+    if (isAdmin()) {
+      if ((await data.adminPin()) !== current) throw fail('A senha atual está incorreta.');
+      await setDoc(doc(db, CONFIG, 'admin'), { pin: next, updatedAt: new Date().toISOString() });
+      return;
     }
-    return { id: uid, ...user };
+    const fresh = await data.getUser(session.user.id);
+    if (!fresh || fresh.pin !== current) throw fail('A senha atual está incorreta.');
+    await updateDoc(doc(db, USERS, session.user.id), { pin: next });
+    session.user.pin = next;
   }),
 
-  login: (identifier, password) => guard(async () => {
-    if (!password) throw fail('Informe a senha.');
-    const email = await resolveEmail(identifier);
-    await signInWithEmailAndPassword(auth, email, password);
+  // Administrador define a senha de um pastor ou líder
+  setUserPin: (id, pin) => guard(async () => {
+    if (!isPin(pin)) throw fail('A senha precisa ter exatamente 6 números.');
+    await updateDoc(doc(db, USERS, id), { pin });
   }),
-
-  adminLogin: (password) => guard(async () => {
-    if (!password) throw fail('Informe a senha do administrador.');
-    await signInWithEmailAndPassword(auth, ADMIN_EMAIL, password);
-  }),
-
-  resetPassword: (identifier) => guard(async () => {
-    const email = await resolveEmail(identifier);
-    await sendPasswordResetEmail(auth, email);
-    return email;
-  }),
-
-  // Troca de senha dentro do aplicativo (confirma a senha atual antes)
-  changePassword: (current, next, confirm) => guard(async () => {
-    if (next.length < 6) throw fail('A nova senha precisa ter pelo menos 6 caracteres.');
-    if (next !== confirm) throw fail('As senhas não conferem.');
-    if (next === current) throw fail('A nova senha precisa ser diferente da atual.');
-    const user = auth.currentUser;
-    await reauthenticateWithCredential(user, EmailAuthProvider.credential(user.email, current));
-    await updatePassword(user, next);
-    if (session.user.mustChangePassword) {
-      await setDoc(doc(db, USERS, user.uid), { ...stripId(session.user), mustChangePassword: false });
-      session.user.mustChangePassword = false;
-    }
-  }),
-
-  logout: () => signOut(auth),
 
   getUser: (id) => guard(async () => {
     const snap = await getDoc(doc(db, USERS, id));
@@ -357,8 +329,8 @@ const data = {
 
   // Distritos que já têm pastor cadastrado
   pastorDistricts: () => guard(async () => {
-    const snap = await getDocs(collection(db, PASTORES));
-    return new Set(snap.docs.map((d) => d.id));
+    const snap = await getDocs(query(collection(db, USERS), where('role', '==', 'pastor')));
+    return new Set(snap.docs.map((d) => d.data().district));
   }),
 
   getTeam: (id) => guard(async () => {
@@ -397,7 +369,7 @@ const data = {
   overview: () => guard(async () => {
     const byDistrict = (col) => (isAdmin() ? collection(db, col) : query(collection(db, col), where('district', '==', session.user.district)));
     const [us, ts] = await Promise.all([getDocs(byDistrict(USERS)), getDocs(byDistrict(TEAMS))]);
-    const users = new Map(us.docs.map((d) => [d.id, withId(d)]).filter(([, u]) => u.role !== 'admin'));
+    const users = new Map(us.docs.map((d) => [d.id, withId(d)]));
     return {
       users: [...users.values()],
       teams: ts.docs.map(withId).sort(byCreated).map((t) => ({ ...t, owner: users.get(t.ownerId) || null })),
@@ -631,22 +603,25 @@ function bindShell() {
     await saving;
     draft = null;
     overview = null;
+    setSession(null);
     location.hash = '#/entrar';
-    await data.logout();
   }));
 }
 
 // ---------- Tela de entrada ----------
 
 const AUTH_TEXT = {
-  entrar: ['Bem-vindo', 'Entre com o telefone (ou e-mail) e a senha do seu cadastro.'],
+  entrar: ['Bem-vindo', 'Entre com o telefone e a senha de 6 números do seu cadastro.'],
   cadastrar: ['Criar cadastro', 'Pastor ou líder: crie seu acesso para cadastrar e acompanhar as equipes.'],
-  recuperar: ['Recuperar senha', 'Informe o telefone ou e-mail do cadastro. Enviaremos um link para você criar uma nova senha.'],
-  admin: ['Administrador', 'Acesso ao acompanhamento geral do Calebe 2027.'],
+  recuperar: ['Esqueci minha senha', 'Fale com o administrador do Calebe 2027: ele consegue ver e redefinir a sua senha.'],
+  admin: ['Administrador', 'Entre com a senha de 6 números do administrador.'],
+  'admin-criar': ['Criar senha do administrador', 'Primeiro acesso: crie a senha de 6 números do administrador. Depois ela pode ser alterada em "Minha conta".'],
 };
 
-const passwordField = (name, label, autocomplete, extra = '') => `<label class="field"><span>${label}</span>
-  <div class="pw-wrap"><input class="input" type="password" name="${name}" autocomplete="${autocomplete}" ${extra} required>
+// Campo de senha numérica (6 números) com botão para mostrar
+const passwordField = (name, label, autocomplete) => `<label class="field"><span>${label}</span>
+  <div class="pw-wrap"><input class="input pin" type="password" name="${name}" autocomplete="${autocomplete}"
+    inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="••••••" required>
   <button type="button" class="pw-toggle" data-toggle-pw aria-label="Mostrar senha">${icon('eye')}</button></div></label>`;
 
 function authForm(mode) {
@@ -660,8 +635,6 @@ function authForm(mode) {
       </div>
       <label class="field"><span>Nome completo</span><input class="input" name="name" autocomplete="name" placeholder="Ex.: João da Silva" required></label>
       <label class="field"><span>Telefone (WhatsApp)</span><input class="input" name="phone" inputmode="tel" autocomplete="tel" placeholder="(00) 00000-0000" data-phone required></label>
-      <label class="field"><span>E-mail</span><input class="input" type="email" name="email" autocomplete="email" placeholder="seuemail@exemplo.com" required>
-        <small class="hint">Usado para recuperar a senha, se você esquecer.</small></label>
       <label class="field"><span>Distrito</span>
         <select class="select" name="district" id="districtSelect" required>
           <option value="">Selecione o seu distrito</option>
@@ -670,32 +643,45 @@ function authForm(mode) {
         <small class="hint" id="districtHint">Cada distrito tem um único pastor e pode ter vários líderes e equipes.</small>
       </label>
       <label class="field" id="churchField" hidden><span>Igreja</span><input class="input" name="church" placeholder="Nome da sua igreja"></label>
-      ${passwordField('password', 'Crie uma senha', 'new-password', 'minlength="6" placeholder="Mínimo de 6 caracteres"')}
-      ${passwordField('password2', 'Confirme a senha', 'new-password', 'minlength="6"')}
+      ${passwordField('pin', 'Crie uma senha de 6 números', 'new-password')}
+      ${passwordField('pin2', 'Confirme a senha', 'new-password')}
+      <small class="hint">Não use a senha do banco ou do cartão.</small>
       <button class="btn btn-gold btn-block" style="height:48px">Criar cadastro ${icon('arrowRight')}</button>
     </form>`;
   if (mode === 'recuperar') return `
-    <form class="auth-form" id="authForm" novalidate>
-      <label class="field"><span>Telefone ou e-mail</span><input class="input" name="identifier" autocomplete="username" placeholder="(00) 00000-0000 ou e-mail" required></label>
-      <button class="btn btn-primary btn-block" style="height:48px">Enviar link de recuperação ${icon('arrowRight')}</button>
+    <div class="auth-form">
+      <div class="info-box">${icon('key')}<div><strong>Como recuperar</strong>
+        <p>Envie uma mensagem ao administrador do Calebe 2027 informando seu nome e telefone. Ele pode ver a sua senha ou criar uma nova para você.</p></div></div>
       <a class="auth-link" href="#/entrar">${icon('arrowLeft')}Voltar para entrar</a>
+    </div>`;
+  if (mode === 'admin-criar') return `
+    <form class="auth-form" id="authForm" novalidate>
+      ${passwordField('pin', 'Nova senha do administrador', 'new-password')}
+      ${passwordField('pin2', 'Confirme a senha', 'new-password')}
+      <button class="btn btn-gold btn-block" style="height:48px">${icon('key')}Criar senha e entrar</button>
+      <a class="auth-link" href="#/entrar">${icon('arrowLeft')}Voltar</a>
     </form>`;
   if (mode === 'admin') return `
     <form class="auth-form" id="authForm" novalidate>
-      ${passwordField('password', 'Senha do administrador', 'current-password')}
+      ${passwordField('pin', 'Senha do administrador', 'current-password')}
       <button class="btn btn-primary btn-block" style="height:48px">Entrar como administrador ${icon('arrowRight')}</button>
       <a class="auth-link" href="#/entrar">${icon('arrowLeft')}Voltar</a>
     </form>`;
   return `
     <form class="auth-form" id="authForm" novalidate>
-      <label class="field"><span>Telefone ou e-mail</span><input class="input" name="identifier" autocomplete="username" placeholder="(00) 00000-0000" required></label>
-      ${passwordField('password', 'Senha', 'current-password')}
+      <label class="field"><span>Telefone</span><input class="input" name="phone" inputmode="tel" autocomplete="username" placeholder="(00) 00000-0000" data-phone required></label>
+      ${passwordField('pin', 'Senha (6 números)', 'current-password')}
       <button class="btn btn-primary btn-block" style="height:48px">Entrar ${icon('arrowRight')}</button>
       <a class="auth-link" href="#/recuperar">Esqueci minha senha</a>
     </form>`;
 }
 
-function renderAuth(mode = 'entrar') {
+async function renderAuth(mode = 'entrar') {
+  if (mode === 'admin') {
+    // Sem senha criada ainda: o primeiro acesso cria a senha do administrador
+    const pin = await data.adminPin().catch(() => 'erro');
+    if (!pin) mode = 'admin-criar';
+  }
   if (!AUTH_TEXT[mode]) mode = 'entrar';
   const watermark = Array.from({ length: 14 }, (_, i) =>
     `<span>${(i % 2 ? 'EU VOU ' : 'EU SOU ').repeat(12)}</span>`).join('');
@@ -729,42 +715,49 @@ function renderAuth(mode = 'entrar') {
   $$('input[name="mode"]').forEach((r) => r.addEventListener('change', () => { location.hash = `#/${r.value}`; }));
   $$('[data-phone]').forEach(bindPhoneMask);
   bindPasswordToggles();
+  bindPinInputs();
   if (mode === 'cadastrar') bindDistrictChoice();
 
-  $('#authForm').addEventListener('submit', async (e) => {
+  const form = $('#authForm');
+  if (!form) return;
+  form.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const form = Object.fromEntries(new FormData(e.target).entries());
+    const f = Object.fromEntries(new FormData(e.target).entries());
     const btn = $('button:not([type="button"])', e.target);
     btn.disabled = true;
     try {
       if (mode === 'cadastrar') {
-        registering = true;
-        const user = await data.register(form);
-        registering = false;
+        const user = await data.register(f);
         setSession({ kind: 'user', user });
         toast('Cadastro criado com sucesso!');
         location.hash = '#/painel';
-      } else if (mode === 'recuperar') {
-        const email = await data.resetPassword(form.identifier);
-        toast(`Enviamos o link de recuperação para ${maskEmail(email)}.`);
-        location.hash = '#/entrar';
+      } else if (mode === 'admin-criar') {
+        await data.adminSetup(f.pin, f.pin2);
+        setSession({ kind: 'admin', user: { id: 'admin', name: 'Administrador', role: 'admin' } });
+        toast('Senha do administrador criada!');
+        location.hash = '#/admin/geral';
       } else if (mode === 'admin') {
-        await data.adminLogin(form.password);
+        await data.adminLogin(f.pin);
+        setSession({ kind: 'admin', user: { id: 'admin', name: 'Administrador', role: 'admin' } });
+        location.hash = '#/admin/geral';
       } else {
-        await data.login(form.identifier, form.password);
+        const user = await data.login(f.phone, f.pin);
+        setSession({ kind: 'user', user });
+        toast(`Olá, ${firstName(user.name)}!`);
+        location.hash = '#/painel';
       }
     } catch (err) {
-      registering = false;
       toast(err.message, 'error');
       btn.disabled = false;
     }
   });
 }
 
-// Mostra só o começo do e-mail (ex.: jo***@gmail.com)
-function maskEmail(email) {
-  const [user, domain] = String(email).split('@');
-  return `${user.slice(0, 2)}***@${domain}`;
+// Campos de senha aceitam só números
+function bindPinInputs(root = document) {
+  $$('input.pin', root).forEach((input) => input.addEventListener('input', () => {
+    input.value = input.value.replace(/\D/g, '').slice(0, 6);
+  }));
 }
 
 function bindPasswordToggles(root = document) {
@@ -1957,53 +1950,13 @@ async function exportPdf(kind, teams) {
 
 // ---------- Minha conta e troca de senha ----------
 
-function changePasswordForm(forced) {
+function changePasswordForm() {
   return `<form class="auth-form" id="pwForm" novalidate>
-    ${passwordField('current', forced ? 'Senha atual (a que você recebeu)' : 'Senha atual', 'current-password')}
-    ${passwordField('next', 'Nova senha', 'new-password', 'minlength="6" placeholder="Mínimo de 6 caracteres"')}
-    ${passwordField('confirm', 'Confirme a nova senha', 'new-password', 'minlength="6"')}
+    ${passwordField('current', 'Senha atual', 'current-password')}
+    ${passwordField('next', 'Nova senha (6 números)', 'new-password')}
+    ${passwordField('confirm', 'Confirme a nova senha', 'new-password')}
     <button class="btn btn-primary btn-block" style="height:48px">${icon('key')}Salvar nova senha</button>
   </form>`;
-}
-
-function bindChangePassword(onDone) {
-  bindPasswordToggles();
-  $('#pwForm').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const f = Object.fromEntries(new FormData(e.target).entries());
-    const btn = $('button:not([type="button"])', e.target);
-    btn.disabled = true;
-    try {
-      await data.changePassword(f.current, f.next, f.confirm);
-      toast('Senha alterada com sucesso!');
-      e.target.reset();
-      onDone();
-    } catch (err) {
-      toast(err.message, 'error');
-    } finally {
-      btn.disabled = false;
-    }
-  });
-}
-
-// Primeiro acesso do administrador: troca obrigatória da senha recebida
-function renderForcedPassword() {
-  app.innerHTML = `<div class="auth">
-    <section class="auth-hero">
-      <img class="auth-logo" src="assets/logo-calebe.png" alt="Missão Calebe">
-      <p class="auth-tag">Sistema de acompanhamento <b>Calebe 2027</b></p>
-    </section>
-    <section class="auth-panel">
-      <div class="auth-card fade-in">
-        <h2>Crie sua nova senha</h2>
-        <p class="lead">Este é o seu primeiro acesso. Por segurança, troque a senha que você recebeu por uma senha só sua.</p>
-        ${changePasswordForm(true)}
-        <button class="auth-link as-button" data-logout-plain>${icon('logout')}Sair</button>
-      </div>
-    </section>
-  </div>`;
-  bindChangePassword(() => { location.hash = isAdmin() ? '#/admin/geral' : '#/painel'; route().finally(setThemeColor); });
-  $('[data-logout-plain]').onclick = () => { location.hash = '#/entrar'; data.logout(); };
 }
 
 function renderAccount() {
@@ -2011,7 +1964,7 @@ function renderAccount() {
   const roleLabel = isAdmin() ? 'Administrador' : isPastor() ? 'Pastor' : 'Líder';
   const rows = isAdmin()
     ? [['Função', roleLabel], ['Acesso', 'Área do Administrador']]
-    : [['Nome', u.name], ['Função', roleLabel], ['Distrito', u.district], ...(u.church ? [['Igreja', u.church]] : []), ['Telefone', u.phone], ['E-mail', u.email || '—']];
+    : [['Nome', u.name], ['Função', roleLabel], ['Distrito', u.district], ...(u.church ? [['Igreja', u.church]] : []), ['Telefone', u.phone]];
   app.innerHTML = shell(`
     <div class="page-head">
       <div>
@@ -2022,62 +1975,107 @@ function renderAccount() {
     </div>
     <div class="row-2">
       ${chartCard('Dados do cadastro', '', `<dl class="detail-list" style="grid-template-columns:1fr">${rows.map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>`)}
-      ${chartCard('Alterar senha', 'Informe a senha atual e escolha uma nova senha.', changePasswordForm(false))}
+      ${chartCard('Alterar senha', 'Informe a senha atual e escolha uma nova senha de 6 números.', changePasswordForm())}
     </div>`, 'conta');
   bindShell();
-  bindChangePassword(() => {});
+  bindPasswordToggles();
+  bindPinInputs();
+  $('#pwForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = Object.fromEntries(new FormData(e.target).entries());
+    const btn = $('button:not([type="button"])', e.target);
+    btn.disabled = true;
+    try {
+      await data.changePin(f.current, f.next, f.confirm);
+      toast('Senha alterada com sucesso!');
+      e.target.reset();
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  });
 }
 
-// ---------- Usuários (administrador) ----------
+// ---------- Usuários e senhas (administrador) ----------
+
+let adminPinCache = '';
 
 ADMIN_VIEWS.usuarios = () => {
   const q = adminQuery.trim().toLowerCase();
   const users = overview.users
     .filter((u) => (!adminFilter || u.district === adminFilter)
-      && (!q || [u.name, u.phone, u.email, u.church, u.district].join(' ').toLowerCase().includes(q)))
+      && (!q || [u.name, u.phone, u.church, u.district].join(' ').toLowerCase().includes(q)))
     .sort((a, b) => (a.district || '').localeCompare(b.district || '') || (a.role === 'pastor' ? -1 : 1) - (b.role === 'pastor' ? -1 : 1) || a.name.localeCompare(b.name));
+  const pinCell = (pin, id) => `<span class="pin-view" data-pin="${esc(pin || '')}"><code>••••••</code>
+    <button type="button" class="icon-btn plain" data-show-pin aria-label="Mostrar senha">${icon('eye')}</button></span>
+    <button class="btn btn-sm btn-ghost" data-set-pin="${esc(id)}">${icon('key')}Alterar</button>`;
   return `
-    <div class="info-box">${icon('key')}<div><strong>Senhas protegidas</strong>
-      <p>As senhas são guardadas criptografadas pelo Google e ninguém consegue vê-las, nem o administrador. Para ajudar alguém que esqueceu a senha, use <b>Enviar link de senha</b>: a pessoa recebe no e-mail um link para criar uma nova senha. Ela também pode usar "Esqueci minha senha" na tela de entrada.</p></div></div>
-    ${tableCard(`Usuários cadastrados (${users.length})`, 'Pastores e líderes de todos os distritos', `<table class="data">
-      <thead><tr><th>Nome</th><th>Distrito</th><th>Telefone</th><th>E-mail</th><th>Cadastro</th><th>Senha</th></tr></thead>
+    <div class="card admin-pin-card">
+      <div class="report-ico">${icon('shield')}</div>
+      <div><strong>Senha do administrador</strong><small>Pode ser alterada aqui ou em Minha conta.</small></div>
+      <div class="pin-actions">${pinCell(adminPinCache, 'admin')}</div>
+    </div>
+    ${tableCard(`Usuários cadastrados (${users.length})`, 'Pastores e líderes com suas senhas. Toque no olho para ver a senha.', `<table class="data">
+      <thead><tr><th>Nome</th><th>Distrito</th><th>Telefone</th><th>Cadastro</th><th>Senha</th></tr></thead>
       <tbody>${users.length ? users.map((u) => `<tr>
         <td><div class="t-name"><strong>${esc(u.name)}</strong><small><span class="badge ${u.role === 'pastor' ? 'navy' : 'gold'}">${u.role === 'pastor' ? 'Pastor' : 'Líder'}</span></small></div></td>
         <td>${esc(u.district || '—')}${u.church ? `<br><small class="muted">${esc(u.church)}</small>` : ''}</td>
         <td>${u.phoneDigits ? `<a href="https://wa.me/55${esc(u.phoneDigits)}" target="_blank" rel="noopener">${esc(u.phone)}</a>` : esc(u.phone || '—')}</td>
-        <td>${esc(u.email || '—')}</td>
         <td>${u.createdAt ? fmtDate(u.createdAt.slice(0, 10)) : '—'}</td>
-        <td>${u.email ? `<button class="btn btn-sm btn-ghost" data-reset="${esc(u.email)}">${icon('mail')}Enviar link de senha</button>` : '<span class="muted">Sem e-mail</span>'}</td>
-      </tr>`).join('') : '<tr><td colspan="6"><div class="empty">Nenhum usuário encontrado.</div></td></tr>'}</tbody>
+        <td><div class="pin-actions">${pinCell(u.pin, u.id)}</div></td>
+      </tr>`).join('') : '<tr><td colspan="5"><div class="empty">Nenhum usuário encontrado.</div></td></tr>'}</tbody>
     </table>`)}`;
 };
 
 function bindUsers() {
-  $$('[data-reset]').forEach((b) => (b.onclick = async () => {
-    const email = b.dataset.reset;
-    const ok = await confirmDialog('Enviar link de senha?', `Será enviado para ${email} um link para criar uma nova senha.`, 'Enviar link');
-    if (!ok) return;
-    b.disabled = true;
-    try {
-      await guard(() => sendPasswordResetEmail(auth, email));
-      toast(`Link enviado para ${email}.`);
-    } catch (err) {
-      toast(err.message, 'error');
-    } finally {
-      b.disabled = false;
-    }
+  $$('[data-show-pin]').forEach((b) => (b.onclick = () => {
+    const box = b.closest('.pin-view');
+    const code = $('code', box);
+    const show = code.textContent.includes('•');
+    code.textContent = show ? (box.dataset.pin || 'sem senha') : '••••••';
+    b.innerHTML = icon(show ? 'eyeOff' : 'eye');
+  }));
+  $$('[data-set-pin]').forEach((b) => (b.onclick = () => {
+    const id = b.dataset.setPin;
+    const name = id === 'admin' ? 'o administrador' : (overview.users.find((u) => u.id === id) || {}).name;
+    modal(`<h3>Alterar senha</h3><p class="sub">Nova senha de 6 números para ${esc(name)}.</p>
+      <form id="setPin">
+        ${passwordField('pin', 'Nova senha', 'new-password')}
+        <div class="actions"><button type="button" class="btn btn-ghost" data-cancel>Cancelar</button><button class="btn btn-primary">Salvar senha</button></div>
+      </form>`, (el, close) => {
+      bindPasswordToggles(el);
+      bindPinInputs(el);
+      $('[data-cancel]', el).onclick = close;
+      $('form', el).addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const pin = e.target.pin.value;
+        try {
+          if (id === 'admin') {
+            if (!isPin(pin)) throw fail('A senha precisa ter exatamente 6 números.');
+            await guard(() => setDoc(doc(db, CONFIG, 'admin'), { pin, updatedAt: new Date().toISOString() }));
+            adminPinCache = pin;
+          } else {
+            await data.setUserPin(id, pin);
+            const u = overview.users.find((x) => x.id === id);
+            if (u) u.pin = pin;
+          }
+          close();
+          toast('Senha alterada.');
+          $('#adminBody').innerHTML = ADMIN_VIEWS.usuarios();
+          bindAdminBody('usuarios');
+        } catch (err) { toast(err.message, 'error'); }
+      });
+    });
   }));
 }
 
 // ---------- Roteador ----------
 
-let authReady = false;   // primeira resposta do Firebase sobre o login
-let registering = false; // durante o cadastro a conta existe antes dos dados
-
 const AUTH_PAGES = ['entrar', 'cadastrar', 'recuperar', 'admin-entrar'];
+let sessionChecked = false;
 
 async function route() {
-  if (!authReady) return;
   const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
   const [page, a, b] = parts;
   tip.hidden = true;
@@ -2085,7 +2083,6 @@ async function route() {
   if (!session) {
     return renderAuth(page === 'admin-entrar' ? 'admin' : AUTH_PAGES.includes(page) ? page : 'entrar');
   }
-  if (session.user.mustChangePassword) return renderForcedPassword();
   if (AUTH_PAGES.includes(page) || !page) {
     location.hash = isAdmin() ? '#/admin/geral' : '#/painel';
     return;
@@ -2096,7 +2093,19 @@ async function route() {
     if (session.kind === 'admin') {
       if (page !== 'admin') { location.hash = '#/admin/geral'; return; }
       if (a === 'equipe' && b) return await renderTeamDetail(b);
+      if (a === 'usuarios') adminPinCache = (await data.adminPin()) || '';
       return await renderOverview(a || 'geral', true);
+    }
+    if (!sessionChecked) {
+      // Confere se o cadastro ainda existe (ex.: removido pelo administrador)
+      const fresh = await data.getUser(session.user.id);
+      if (!fresh) {
+        setSession(null);
+        toast('Cadastro não encontrado. Entre novamente.', 'error');
+        return renderAuth('entrar');
+      }
+      session.user = fresh;
+      sessionChecked = true;
     }
     if (page === 'equipe' && a) return await renderTeam(a, b);
     if (page === 'distrito') {
@@ -2117,22 +2126,16 @@ async function route() {
   }
 }
 
-// Carrega o cadastro de quem entrou
-async function loadSession(fbUser) {
-  if (!fbUser) { setSession(null); return; }
-  let user = await data.getUser(fbUser.uid).catch(() => null);
-  if (!user && fbUser.email === ADMIN_EMAIL) {
-    user = { name: 'Administrador', role: 'admin', email: ADMIN_EMAIL, mustChangePassword: false, createdAt: new Date().toISOString() };
-    await setDoc(doc(db, USERS, fbUser.uid), user).catch(() => {});
-    user = { id: fbUser.uid, ...user };
-  }
-  if (!user) {
-    setSession(null);
-    toast('Cadastro não encontrado. Faça seu cadastro novamente.', 'error');
-    await signOut(auth);
+// Recupera a sessão salva neste aparelho
+async function restoreSession() {
+  const saved = store.get(SESSION_KEY);
+  if (!saved) return;
+  if (saved.kind === 'admin') {
+    session = { kind: 'admin', user: { id: 'admin', name: 'Administrador', role: 'admin' } };
     return;
   }
-  setSession({ kind: user.role === 'admin' ? 'admin' : 'user', user });
+  const user = await data.getUser(saved.id).catch(() => null);
+  if (user) { session = { kind: 'user', user }; sessionChecked = true; } else store.set(SESSION_KEY, null);
 }
 
 // Cor da barra de status: laranja no login, marrom dentro do sistema
@@ -2148,10 +2151,4 @@ if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => { navigator.serviceWorker.register('/sw.js').catch(() => {}); });
 }
 app.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
-
-onAuthStateChanged(auth, async (fbUser) => {
-  if (registering) return;
-  await loadSession(fbUser);
-  authReady = true;
-  route().finally(setThemeColor);
-});
+restoreSession().finally(() => route().finally(setThemeColor));

@@ -19,21 +19,20 @@ vercel.json             Configuração do Vercel
 
 ## Firebase
 
-O projeto usa o Firebase **calebempi** (`js/firebase-config.js`):
+O projeto usa o Firestore do Firebase **calebempi** (`js/firebase-config.js`). As regras estão em `firestore.rules` e precisam ser publicadas em *Firestore Database → Regras* sempre que mudarem.
 
-- **Authentication** (e-mail e senha): login de pastores, líderes e do administrador. As senhas ficam criptografadas pelo Google; ninguém consegue vê-las.
-- **Firestore**: cadastros e equipes. As regras estão em `firestore.rules` e precisam ser publicadas em *Firestore Database → Regras* sempre que mudarem.
+Coleções: `calebe_usuarios` (cadastros, com a senha de 6 números), `calebe_equipes` (equipes) e `calebe_config` (senha do administrador).
 
-Coleções: `calebe_usuarios` (cadastros), `calebe_equipes` (equipes), `calebe_logins` (telefone → e-mail, para entrar com o telefone) e `calebe_pastores` (um documento por distrito, garante um único pastor).
+> Atenção: o acesso é controlado pelo próprio sistema (telefone + senha de 6 números), sem login do Google. Por isso o banco precisa ficar aberto às coleções do Calebe e as senhas ficam legíveis para quem tiver conhecimento técnico. Oriente as pessoas a não usarem a senha do banco ou do cartão.
 
 ## Funcionalidades
 
 **Acesso e permissões**
-- Pastor ou líder cria o próprio cadastro com **e-mail e senha** e entra com o telefone (ou e-mail) e a senha. "Esqueci minha senha" envia um link de redefinição para o e-mail.
-- Todos podem trocar a senha em **Minha conta**.
-- O **administrador** entra pela "Área do Administrador" com a senha recebida e é obrigado a trocá-la no primeiro acesso.
-- Na aba **Usuários**, o administrador vê todos os cadastrados (telefone com link para WhatsApp e e-mail) e pode **enviar o link de redefinição de senha** para quem esqueceu. O **pastor** informa nome, telefone e distrito (ele é o líder geral do distrito, sem igreja). O **líder** informa também a sua igreja.
-- No painel, o pastor vê todos os líderes do distrito, com igreja, telefone e equipes de cada um.
+- Pastor ou líder cria o próprio cadastro com uma **senha de 6 números** e entra com o telefone e a senha.
+- Todos podem trocar a senha em **Minha conta**. Quem esquecer a senha fala com o administrador.
+- O **administrador** cria a própria senha de 6 números no primeiro acesso à "Área do Administrador" e pode alterá-la depois.
+- Na aba **Usuários**, o administrador vê a senha de todos (inclusive a sua) e pode alterá-las.
+- O **pastor** informa nome, telefone e distrito (ele é o líder geral do distrito, sem igreja). O **líder** informa também a sua igreja.
 - 24 distritos fixos. **Cada distrito tem um único pastor** e pode ter vários líderes e várias equipes.
 - **Pastor e líder veem apenas o próprio distrito** (Calebes inscritos, alvos, equipes e todas as abas de acompanhamento).
 - O pastor edita todas as equipes do distrito; o líder edita as equipes que cadastrou e vê as demais em modo de consulta.
