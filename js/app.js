@@ -552,9 +552,9 @@ function shell(content, active, { bottom = '', nav = true } = {}) {
   const base = viewBase();
   const groups = admin
     ? [{ title: 'Administração', links: [
-        ...VIEW_LINKS.map((l) => ({ ...l, href: `${base}/${l.key}`, bottom: true })),
-        { key: 'usuarios', label: 'Usuários', ico: 'user', href: '#/admin/usuarios' },
-        { key: 'relatorios', label: 'Relatórios', ico: 'download', href: '#/admin/relatorios' },
+        ...VIEW_LINKS.map((l) => ({ ...l, href: `${base}/${l.key}`, bottom: ['geral', 'equipes'].includes(l.key) })),
+        { key: 'usuarios', label: 'Usuários', short: 'Usuários', ico: 'user', href: '#/admin/usuarios', bottom: true },
+        { key: 'relatorios', label: 'Relatórios', short: 'Relatórios', ico: 'download', href: '#/admin/relatorios', bottom: true },
         { key: 'conta', label: 'Minha conta', ico: 'key', href: '#/conta' },
       ] }]
     : [
@@ -563,7 +563,7 @@ function shell(content, active, { bottom = '', nav = true } = {}) {
           { key: 'conta', label: 'Minha conta', ico: 'key', href: '#/conta' },
         ] },
         { title: `Distrito ${session.user.district || ''}`, links: VIEW_LINKS.map((l) => ({
-          ...l, href: `${base}/${l.key}`, bottom: ['geral', 'equipes', 'evangelismo', 'acoes'].includes(l.key),
+          ...l, href: `${base}/${l.key}`, bottom: ['geral', 'equipes', 'evangelismo'].includes(l.key),
         })) },
       ];
   const bottomLinks = groups.flatMap((g) => g.links).filter((l) => l.bottom);
@@ -591,14 +591,34 @@ function shell(content, active, { bottom = '', nav = true } = {}) {
       </div>
     </header>
     <main class="main fade-in has-bottom">${content}</main>
-    ${nav ? `<nav class="bottom-nav" aria-label="Seções">${bottomLinks.map((l) => `<a href="${l.href}" class="${active === l.key ? 'active' : ''}">${icon(l.ico)}<span>${l.short}</span></a>`).join('')}</nav>` : ''}
+    ${nav ? `<nav class="bottom-nav" aria-label="Seções">${bottomLinks.map((l) => `<a href="${l.href}" class="${active === l.key ? 'active' : ''}">${icon(l.ico)}<span>${l.short}</span></a>`).join('')}
+      <button type="button" class="${bottomLinks.some((l) => l.key === active) ? '' : 'active'}" data-menu>${icon('list')}<span>Menu</span></button></nav>` : ''}
+    <template id="menuTpl">
+      <div class="menu-head"><span class="avatar">${admin ? icon('shield', 'style="width:18px;height:18px"') : esc(initials(name))}</span>
+        <div><strong>${esc(name)}</strong><small>${esc(role)}</small></div></div>
+      ${groups.map((g) => `<div class="menu-title">${esc(g.title)}</div>
+        <div class="menu-links">${g.links.map((l) => `<a href="${l.href}" class="${active === l.key ? 'active' : ''}">${icon(l.ico)}${l.label}</a>`).join('')}</div>`).join('')}
+      <button class="btn btn-ghost btn-block menu-logout" data-logout>${icon('logout')}Sair</button>
+    </template>
     ${bottom}
   </div>`;
 }
 
 function bindShell() {
-  $$('[data-logout]').forEach((b) => b.addEventListener('click', async (e) => {
+  const menuBtn = $('[data-menu]');
+  if (menuBtn) menuBtn.onclick = () => {
+    modal(`<div class="app-menu">${$('#menuTpl').innerHTML}</div>`, (el, close) => {
+      $$('a', el).forEach((a) => a.addEventListener('click', close));
+      bindLogout(el, close);
+    });
+  };
+  bindLogout(document);
+}
+
+function bindLogout(root, before = () => {}) {
+  $$('[data-logout]', root).forEach((b) => b.addEventListener('click', async (e) => {
     e.preventDefault();
+    before();
     if (saveTimer) flushSave();
     await saving;
     draft = null;

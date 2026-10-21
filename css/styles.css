@@ -232,6 +232,17 @@ a.avatar { text-decoration: none; }
 .admin-pin-card .pin-actions { margin-left: auto; }
 .input.pin { letter-spacing: .3em; font-weight: 600; }
 .input.pin::placeholder { letter-spacing: .2em; }
+/* Menu do celular */
+.app-menu { display: flex; flex-direction: column; gap: 6px; max-height: calc(80vh - var(--sat)); overflow-y: auto; }
+.menu-head { display: flex; align-items: center; gap: 12px; padding-bottom: 14px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
+.menu-head strong { display: block; }
+.menu-head small { color: var(--ink-3); font-size: 12.5px; }
+.menu-title { font-size: 11px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-3); padding: 10px 4px 2px; }
+.menu-links { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.menu-links a { display: flex; align-items: center; gap: 10px; padding: 12px; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--line); color: var(--ink); text-decoration: none; font-weight: 600; font-size: 14px; }
+.menu-links a svg { width: 19px; height: 19px; color: var(--gold-600); flex: none; }
+.menu-links a.active { background: var(--gold-100); border-color: var(--gold-300); }
+.menu-logout { margin-top: 10px; height: 46px; }
 .info-box { display: flex; gap: 14px; padding: 16px 20px; border-radius: var(--radius); background: #eef6f1; border: 1px solid #b9dcc8; color: #1d4a33; }
 .info-box svg { width: 24px; height: 24px; flex: none; color: var(--ok); }
 .info-box p { font-size: 13.5px; margin-top: 4px; }
@@ -796,7 +807,7 @@ table.data tfoot td { font-weight: 700; background: var(--surface-2); border-top
 @media (max-width: 1024px) {
   .topbar-user { display: flex; align-items: center; gap: 10px; }
   .topbar-user .avatar { display: grid; }
-  .tabs:not(.keep) { display: none; }
+  .tabs { margin-bottom: 16px; }
   .report-grid { grid-template-columns: 1fr; }
   .desk-only { display: none !important; }
   .section-nav { display: none; }
@@ -811,15 +822,16 @@ table.data tfoot td { font-weight: 700; background: var(--surface-2); border-top
     background: rgba(255, 251, 245, .97); backdrop-filter: blur(12px);
     border-top: 1px solid var(--line); box-shadow: 0 -8px 24px -12px rgba(63,26,20,.25);
   }
-  .bottom-nav a {
+  .bottom-nav a, .bottom-nav button {
     display: flex; flex-direction: column; align-items: center; gap: 3px; min-width: 0;
     padding: 7px 2px; border-radius: 12px; text-decoration: none;
     color: var(--ink-3); font-size: 10px; font-weight: 600; letter-spacing: -.01em;
   }
-  .bottom-nav a svg { width: 22px; height: 22px; }
-  .bottom-nav a span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .bottom-nav a.active { color: var(--navy-900); background: var(--gold-100); }
-  .bottom-nav a.active svg { color: var(--gold-600); }
+  .bottom-nav button { border: 0; background: transparent; cursor: pointer; font-family: inherit; }
+  .bottom-nav a svg, .bottom-nav button svg { width: 22px; height: 22px; }
+  .bottom-nav a span, .bottom-nav button span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bottom-nav a.active, .bottom-nav button.active { color: var(--navy-900); background: var(--gold-100); }
+  .bottom-nav a.active svg, .bottom-nav button.active svg { color: var(--gold-600); }
 
   /* Barra fixa de etapas (editor da equipe) */
   .step-bar {
