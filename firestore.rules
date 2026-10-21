@@ -1,16 +1,66 @@
 rules_version = '2';
 
+// Regras do Calebe 2027
+// - Administrador (admin@calebe2027.app): lê e altera tudo.
+// - Pastor: lê o seu distrito e edita todas as equipes dele.
+// - Líder: lê o seu distrito e edita as equipes que cadastrou.
+// - Um único pastor por distrito (documento em calebe_pastores).
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Acesso sem senha nesta fase do projeto: o site lê e grava
-    // cadastros de pastores/líderes e equipes do Calebe 2027.
-    match /calebe_usuarios/{id} {
-      allow read, write: if true;
+    function signedIn() { return request.auth != null; }
+    function isAdmin() { return signedIn() && request.auth.token.email == 'admin@calebe2027.app'; }
+    function me() { return get(/databases/$(database)/documents/calebe_usuarios/$(request.auth.uid)).data; }
+    function myDistrict() { return me().district; }
+
+    // Cadastros de pastores, líderes e do administrador
+    match /calebe_usuarios/{uid} {
+      allow read: if isAdmin()
+        || (signedIn() && (request.auth.uid == uid || resource.data.district == myDistrict()));
+      allow create: if signedIn() && request.auth.uid == uid && (
+        (request.resource.data.role == 'admin' && isAdmin())
+        || request.resource.data.role == 'lider'
+        // pastor só entra junto com a reserva do distrito (garante um por distrito)
+        || (request.resource.data.role == 'pastor'
+            && getAfter(/databases/$(database)/documents/calebe_pastores/$(request.resource.data.district)).data.uid == request.auth.uid)
+      );
+      // Cada um altera o próprio cadastro, sem mudar função nem distrito
+      allow update: if isAdmin() || (signedIn() && request.auth.uid == uid
+        && request.resource.data.role == resource.data.role
+        && request.resource.data.district == resource.data.district);
+      allow delete: if isAdmin();
     }
 
+    // Reserva de pastor por distrito (o id é o nome do distrito)
+    match /calebe_pastores/{district} {
+      allow read: if true;
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+      allow update: if isAdmin();
+      allow delete: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
+    }
+
+    // Telefone → e-mail, para entrar com o telefone (só consulta direta, sem listar)
+    match /calebe_logins/{phone} {
+      allow get: if true;
+      allow list: if isAdmin();
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
+    }
+
+    // Equipes
     match /calebe_equipes/{id} {
-      allow read, write: if true;
+      allow read: if isAdmin() || (signedIn() && resource.data.district == myDistrict());
+      allow create: if signedIn()
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.district == myDistrict();
+      allow update: if isAdmin() || (signedIn()
+        && resource.data.district == myDistrict()
+        && request.resource.data.district == resource.data.district
+        && request.resource.data.ownerId == resource.data.ownerId
+        && (me().role == 'pastor' || resource.data.ownerId == request.auth.uid));
+      allow delete: if isAdmin() || (signedIn()
+        && resource.data.district == myDistrict()
+        && (me().role == 'pastor' || resource.data.ownerId == request.auth.uid));
     }
   }
 }

@@ -4,7 +4,9 @@
    ========================================================= */
 
 import {
-  db, firebaseReady, collection, doc, addDoc, setDoc, getDoc, getDocs, deleteDoc, query, where,
+  db, auth, collection, doc, addDoc, setDoc, getDoc, getDocs, deleteDoc, query, where, writeBatch,
+  onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut,
+  updatePassword, reauthenticateWithCredential, EmailAuthProvider, sendPasswordResetEmail, deleteUser,
 } from './firebase-config.js';
 
 // ---------- Configuração ----------
@@ -104,6 +106,9 @@ const ICONS = {
   sparkle: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   alert: '<path d="M12 3 2 20h20Z"/><path d="M12 10v4M12 17h.01"/>',
+  eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>',
+  eyeOff: '<path d="M3 3l18 18M10.6 6.1A10.5 10.5 0 0 1 12 6c6.5 0 10 6 10 6a17 17 0 0 1-3.2 3.9M6.6 6.6C3.8 8.4 2 12 2 12s3.5 6 10 6c1.6 0 3-.4 4.3-.9"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/>',
+  key: '<circle cx="8" cy="15" r="4"/><path d="m10.8 12.2 9.2-9.2M17 6l3 3M14 9l2 2"/>',
   list: '<path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/>',
 };
 
@@ -175,18 +180,22 @@ function toast(message, type = '') {
 
 // ---------- Sessão e API ----------
 
-let session = store.get('calebe.session'); // { kind: 'user', user } | { kind: 'admin' }
+// Sessão definida pelo login do Firebase: { kind: 'user' | 'admin', user }
+let session = null;
 
 function setSession(s) {
   session = s;
-  if (!s) sessionChecked = false;
-  store.set('calebe.session', s);
 }
+
+// Conta do administrador (a mesma usada nas regras do Firestore)
+const ADMIN_EMAIL = 'admin@calebe2027.app';
 
 // ---------- Dados (Firestore) ----------
 
 const USERS = 'calebe_usuarios';
 const TEAMS = 'calebe_equipes';
+const LOGINS = 'calebe_logins';     // telefone → e-mail (para entrar com o telefone)
+const PASTORES = 'calebe_pastores'; // um documento por distrito: garante um único pastor
 
 const clean = (v, max = 160) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 const onlyDigits = (v) => String(v || '').replace(/\D/g, '');
@@ -199,17 +208,48 @@ const cleanInt = (v) => {
 function fail(message) { return new Error(message); }
 
 // Traduz erros do Firebase para mensagens claras
+const AUTH_ERRORS = {
+  'auth/invalid-credential': 'Telefone, e-mail ou senha incorretos.',
+  'auth/invalid-login-credentials': 'Telefone, e-mail ou senha incorretos.',
+  'auth/wrong-password': 'Senha incorreta.',
+  'auth/user-not-found': 'Cadastro não encontrado.',
+  'auth/invalid-email': 'E-mail inválido.',
+  'auth/email-already-in-use': 'Este e-mail já está cadastrado. Use "Entrar" ou "Esqueci minha senha".',
+  'auth/weak-password': 'A senha precisa ter pelo menos 6 caracteres.',
+  'auth/too-many-requests': 'Muitas tentativas. Aguarde alguns minutos e tente novamente.',
+  'auth/network-request-failed': 'Sem conexão. Verifique sua internet.',
+  'auth/requires-recent-login': 'Por segurança, saia e entre novamente antes de trocar a senha.',
+  'auth/operation-not-allowed': 'O login por e-mail e senha ainda não foi ativado no Firebase.',
+  'auth/configuration-not-found': 'O login por e-mail e senha ainda não foi ativado no Firebase.',
+};
+
 async function guard(fn) {
   try {
     return await fn();
   } catch (err) {
-    if (err && err.code === 'permission-denied') throw fail('Sem permissão no banco de dados. Verifique as regras do Firestore.');
+    if (err && AUTH_ERRORS[err.code]) throw fail(AUTH_ERRORS[err.code]);
+    if (err && err.code === 'permission-denied') throw fail('Você não tem permissão para acessar estes dados.');
     if (err && err.code === 'unavailable') throw fail('Sem conexão com o banco de dados. Verifique sua internet.');
     throw err instanceof Error && !err.code ? err : fail('Não foi possível concluir a operação. Tente novamente.');
   }
 }
 
+// Aceita telefone ou e-mail e devolve o e-mail da conta
+async function resolveEmail(identifier) {
+  const value = clean(identifier, 160);
+  if (!value) throw fail('Informe o telefone ou e-mail.');
+  if (value.includes('@')) return value.toLowerCase();
+  const digits = onlyDigits(value);
+  if (digits.length < 8) throw fail('Informe um telefone ou e-mail válido.');
+  const snap = await getDoc(doc(db, LOGINS, digits));
+  if (!snap.exists()) throw fail('Nenhum cadastro encontrado com este telefone.');
+  return snap.data().email;
+}
+
+const isEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+
 const withId = (snap) => ({ id: snap.id, ...snap.data() });
+const stripId = ({ id, ...rest }) => rest;
 const byCreated = (a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
 
 function sanitizeTeam(t) {
@@ -235,37 +275,80 @@ function sanitizeTeam(t) {
 }
 
 const data = {
+  // Cadastro de pastor ou líder: cria a conta (e-mail e senha) e os dados do cadastro
   register: (input) => guard(async () => {
     const name = clean(input.name, 120);
     const phone = clean(input.phone, 30);
+    const digits = onlyDigits(phone);
+    const email = clean(input.email, 160).toLowerCase();
+    const password = String(input.password || '');
     const role = input.role === 'pastor' || input.role === 'lider' ? input.role : '';
     const district = DISTRITOS.includes(input.district) ? input.district : '';
-    if (!name || !role || onlyDigits(phone).length < 8) throw fail('Informe nome, função e um telefone válido.');
+    if (!name || !role || digits.length < 8) throw fail('Informe nome, função e um telefone válido.');
+    if (!isEmail(email)) throw fail('Informe um e-mail válido. Ele será usado para recuperar a senha.');
+    if (password.length < 6) throw fail('A senha precisa ter pelo menos 6 caracteres.');
+    if (password !== String(input.password2 || '')) throw fail('As senhas não conferem.');
     if (!district) throw fail('Escolha o seu distrito.');
     const church = role === 'lider' ? clean(input.church, 120) : '';
     if (role === 'lider' && !church) throw fail('Informe a sua igreja.');
-    const dup = await getDocs(query(collection(db, USERS), where('phoneDigits', '==', onlyDigits(phone))));
-    if (!dup.empty) throw fail('Já existe um cadastro com este telefone. Use "Entrar".');
+    if ((await getDoc(doc(db, LOGINS, digits))).exists()) throw fail('Já existe um cadastro com este telefone. Use "Entrar".');
     if (role === 'pastor') {
-      const pastor = await getDocs(query(collection(db, USERS), where('district', '==', district), where('role', '==', 'pastor')));
-      if (!pastor.empty) throw fail(`O distrito ${district} já possui pastor cadastrado (${pastor.docs[0].data().name}).`);
+      const pastor = await getDoc(doc(db, PASTORES, district));
+      if (pastor.exists()) throw fail(`O distrito ${district} já possui pastor cadastrado (${pastor.data().name}).`);
     }
-    const user = {
-      name, phone, phoneDigits: onlyDigits(phone), role,
-      church, district,
-      createdAt: new Date().toISOString(),
-    };
-    const ref = await addDoc(collection(db, USERS), user);
-    return { id: ref.id, ...user };
+
+    const cred = await createUserWithEmailAndPassword(auth, email, password);
+    const uid = cred.user.uid;
+    const user = { name, phone, phoneDigits: digits, email, role, church, district, createdAt: new Date().toISOString() };
+    try {
+      // Tudo de uma vez: se o distrito ganhar pastor no meio do caminho, nada é gravado
+      const batch = writeBatch(db);
+      batch.set(doc(db, USERS, uid), user);
+      batch.set(doc(db, LOGINS, digits), { uid, email });
+      if (role === 'pastor') batch.set(doc(db, PASTORES, district), { uid, name });
+      await batch.commit();
+    } catch (err) {
+      await deleteUser(cred.user).catch(() => {});
+      if (err && err.code === 'permission-denied') {
+        throw fail(role === 'pastor' ? `O distrito ${district} já possui pastor cadastrado.` : 'Já existe um cadastro com este telefone.');
+      }
+      throw err;
+    }
+    return { id: uid, ...user };
   }),
 
-  login: (phone) => guard(async () => {
-    const digits = onlyDigits(phone);
-    if (!digits) throw fail('Informe o telefone.');
-    const snap = await getDocs(query(collection(db, USERS), where('phoneDigits', '==', digits)));
-    if (snap.empty) throw fail('Nenhum cadastro encontrado com este telefone.');
-    return withId(snap.docs[0]);
+  login: (identifier, password) => guard(async () => {
+    if (!password) throw fail('Informe a senha.');
+    const email = await resolveEmail(identifier);
+    await signInWithEmailAndPassword(auth, email, password);
   }),
+
+  adminLogin: (password) => guard(async () => {
+    if (!password) throw fail('Informe a senha do administrador.');
+    await signInWithEmailAndPassword(auth, ADMIN_EMAIL, password);
+  }),
+
+  resetPassword: (identifier) => guard(async () => {
+    const email = await resolveEmail(identifier);
+    await sendPasswordResetEmail(auth, email);
+    return email;
+  }),
+
+  // Troca de senha dentro do aplicativo (confirma a senha atual antes)
+  changePassword: (current, next, confirm) => guard(async () => {
+    if (next.length < 6) throw fail('A nova senha precisa ter pelo menos 6 caracteres.');
+    if (next !== confirm) throw fail('As senhas não conferem.');
+    if (next === current) throw fail('A nova senha precisa ser diferente da atual.');
+    const user = auth.currentUser;
+    await reauthenticateWithCredential(user, EmailAuthProvider.credential(user.email, current));
+    await updatePassword(user, next);
+    if (session.user.mustChangePassword) {
+      await setDoc(doc(db, USERS, user.uid), { ...stripId(session.user), mustChangePassword: false });
+      session.user.mustChangePassword = false;
+    }
+  }),
+
+  logout: () => signOut(auth),
 
   getUser: (id) => guard(async () => {
     const snap = await getDoc(doc(db, USERS, id));
@@ -274,8 +357,8 @@ const data = {
 
   // Distritos que já têm pastor cadastrado
   pastorDistricts: () => guard(async () => {
-    const snap = await getDocs(query(collection(db, USERS), where('role', '==', 'pastor')));
-    return new Set(snap.docs.map((d) => d.data().district));
+    const snap = await getDocs(collection(db, PASTORES));
+    return new Set(snap.docs.map((d) => d.id));
   }),
 
   getTeam: (id) => guard(async () => {
@@ -314,7 +397,7 @@ const data = {
   overview: () => guard(async () => {
     const byDistrict = (col) => (isAdmin() ? collection(db, col) : query(collection(db, col), where('district', '==', session.user.district)));
     const [us, ts] = await Promise.all([getDocs(byDistrict(USERS)), getDocs(byDistrict(TEAMS))]);
-    const users = new Map(us.docs.map((d) => [d.id, withId(d)]));
+    const users = new Map(us.docs.map((d) => [d.id, withId(d)]).filter(([, u]) => u.role !== 'admin'));
     return {
       users: [...users.values()],
       teams: ts.docs.map(withId).sort(byCreated).map((t) => ({ ...t, owner: users.get(t.ownerId) || null })),
@@ -498,11 +581,14 @@ function shell(content, active, { bottom = '', nav = true } = {}) {
   const groups = admin
     ? [{ title: 'Administração', links: [
         ...VIEW_LINKS.map((l) => ({ ...l, href: `${base}/${l.key}`, bottom: true })),
+        { key: 'usuarios', label: 'Usuários', ico: 'user', href: '#/admin/usuarios' },
         { key: 'relatorios', label: 'Relatórios', ico: 'download', href: '#/admin/relatorios' },
+        { key: 'conta', label: 'Minha conta', ico: 'key', href: '#/conta' },
       ] }]
     : [
         { title: isPastor() ? 'Área do pastor' : 'Área do líder', links: [
           { key: 'painel', label: 'Início', short: 'Início', ico: 'home', href: '#/painel', bottom: true },
+          { key: 'conta', label: 'Minha conta', ico: 'key', href: '#/conta' },
         ] },
         { title: `Distrito ${session.user.district || ''}`, links: VIEW_LINKS.map((l) => ({
           ...l, href: `${base}/${l.key}`, bottom: ['geral', 'equipes', 'evangelismo', 'acoes'].includes(l.key),
@@ -528,7 +614,7 @@ function shell(content, active, { bottom = '', nav = true } = {}) {
     <header class="topbar">
       <div class="brand"><img class="brand-logo" src="assets/logo-calebe-claro.png" alt="Missão Calebe"></div>
       <div class="topbar-user">
-        <span class="avatar sm" title="${esc(name)}">${admin ? icon('shield', 'style="width:15px;height:15px"') : esc(initials(name))}</span>
+        <a class="avatar sm" href="#/conta" title="Minha conta · ${esc(name)}">${admin ? icon('shield', 'style="width:15px;height:15px"') : esc(initials(name))}</a>
         <button class="btn btn-sm logout" data-logout>${icon('logout')}Sair</button>
       </div>
     </header>
@@ -545,16 +631,75 @@ function bindShell() {
     await saving;
     draft = null;
     overview = null;
-    setSession(null);
     location.hash = '#/entrar';
+    await data.logout();
   }));
 }
 
 // ---------- Tela de entrada ----------
 
+const AUTH_TEXT = {
+  entrar: ['Bem-vindo', 'Entre com o telefone (ou e-mail) e a senha do seu cadastro.'],
+  cadastrar: ['Criar cadastro', 'Pastor ou líder: crie seu acesso para cadastrar e acompanhar as equipes.'],
+  recuperar: ['Recuperar senha', 'Informe o telefone ou e-mail do cadastro. Enviaremos um link para você criar uma nova senha.'],
+  admin: ['Administrador', 'Acesso ao acompanhamento geral do Calebe 2027.'],
+};
+
+const passwordField = (name, label, autocomplete, extra = '') => `<label class="field"><span>${label}</span>
+  <div class="pw-wrap"><input class="input" type="password" name="${name}" autocomplete="${autocomplete}" ${extra} required>
+  <button type="button" class="pw-toggle" data-toggle-pw aria-label="Mostrar senha">${icon('eye')}</button></div></label>`;
+
+function authForm(mode) {
+  if (mode === 'cadastrar') return `
+    <form class="auth-form" id="authForm" novalidate>
+      <div class="field"><span>Função</span>
+        <div class="segmented">
+          <label><input type="radio" name="role" value="pastor" checked><span>Pastor</span></label>
+          <label><input type="radio" name="role" value="lider"><span>Líder</span></label>
+        </div>
+      </div>
+      <label class="field"><span>Nome completo</span><input class="input" name="name" autocomplete="name" placeholder="Ex.: João da Silva" required></label>
+      <label class="field"><span>Telefone (WhatsApp)</span><input class="input" name="phone" inputmode="tel" autocomplete="tel" placeholder="(00) 00000-0000" data-phone required></label>
+      <label class="field"><span>E-mail</span><input class="input" type="email" name="email" autocomplete="email" placeholder="seuemail@exemplo.com" required>
+        <small class="hint">Usado para recuperar a senha, se você esquecer.</small></label>
+      <label class="field"><span>Distrito</span>
+        <select class="select" name="district" id="districtSelect" required>
+          <option value="">Selecione o seu distrito</option>
+          ${DISTRITOS.map((d) => `<option value="${esc(d)}">${esc(d)}</option>`).join('')}
+        </select>
+        <small class="hint" id="districtHint">Cada distrito tem um único pastor e pode ter vários líderes e equipes.</small>
+      </label>
+      <label class="field" id="churchField" hidden><span>Igreja</span><input class="input" name="church" placeholder="Nome da sua igreja"></label>
+      ${passwordField('password', 'Crie uma senha', 'new-password', 'minlength="6" placeholder="Mínimo de 6 caracteres"')}
+      ${passwordField('password2', 'Confirme a senha', 'new-password', 'minlength="6"')}
+      <button class="btn btn-gold btn-block" style="height:48px">Criar cadastro ${icon('arrowRight')}</button>
+    </form>`;
+  if (mode === 'recuperar') return `
+    <form class="auth-form" id="authForm" novalidate>
+      <label class="field"><span>Telefone ou e-mail</span><input class="input" name="identifier" autocomplete="username" placeholder="(00) 00000-0000 ou e-mail" required></label>
+      <button class="btn btn-primary btn-block" style="height:48px">Enviar link de recuperação ${icon('arrowRight')}</button>
+      <a class="auth-link" href="#/entrar">${icon('arrowLeft')}Voltar para entrar</a>
+    </form>`;
+  if (mode === 'admin') return `
+    <form class="auth-form" id="authForm" novalidate>
+      ${passwordField('password', 'Senha do administrador', 'current-password')}
+      <button class="btn btn-primary btn-block" style="height:48px">Entrar como administrador ${icon('arrowRight')}</button>
+      <a class="auth-link" href="#/entrar">${icon('arrowLeft')}Voltar</a>
+    </form>`;
+  return `
+    <form class="auth-form" id="authForm" novalidate>
+      <label class="field"><span>Telefone ou e-mail</span><input class="input" name="identifier" autocomplete="username" placeholder="(00) 00000-0000" required></label>
+      ${passwordField('password', 'Senha', 'current-password')}
+      <button class="btn btn-primary btn-block" style="height:48px">Entrar ${icon('arrowRight')}</button>
+      <a class="auth-link" href="#/recuperar">Esqueci minha senha</a>
+    </form>`;
+}
+
 function renderAuth(mode = 'entrar') {
+  if (!AUTH_TEXT[mode]) mode = 'entrar';
   const watermark = Array.from({ length: 14 }, (_, i) =>
     `<span>${(i % 2 ? 'EU VOU ' : 'EU SOU ').repeat(12)}</span>`).join('');
+  const [title, lead] = AUTH_TEXT[mode];
   app.innerHTML = `<div class="auth">
     <div class="auth-watermark" aria-hidden="true">${watermark}</div>
     <section class="auth-hero">
@@ -564,71 +709,72 @@ function renderAuth(mode = 'entrar') {
     </section>
     <section class="auth-panel">
       <div class="auth-card fade-in">
-        <h2>${mode === 'cadastrar' ? 'Criar cadastro' : 'Bem-vindo'}</h2>
-        <p class="lead">${mode === 'cadastrar' ? 'Pastor ou líder: crie seu acesso para cadastrar suas equipes.' : 'Entre com o telefone informado no seu cadastro.'}</p>
-        <div class="segmented auth-tabs" role="tablist">
+        <h2>${title}</h2>
+        <p class="lead">${lead}</p>
+        ${mode === 'entrar' || mode === 'cadastrar' ? `<div class="segmented auth-tabs" role="tablist">
           <label><input type="radio" name="mode" value="entrar" ${mode === 'entrar' ? 'checked' : ''}><span>Entrar</span></label>
           <label><input type="radio" name="mode" value="cadastrar" ${mode === 'cadastrar' ? 'checked' : ''}><span>Cadastrar</span></label>
-        </div>
-        ${mode === 'cadastrar' ? `
-        <form class="auth-form" id="authForm" novalidate>
-          <div class="field"><span>Função</span>
-            <div class="segmented">
-              <label><input type="radio" name="role" value="pastor" checked><span>Pastor</span></label>
-              <label><input type="radio" name="role" value="lider"><span>Líder</span></label>
-            </div>
-          </div>
-          <label class="field"><span>Nome completo</span><input class="input" name="name" autocomplete="name" placeholder="Ex.: João da Silva" required></label>
-          <label class="field"><span>Telefone (WhatsApp)</span><input class="input" name="phone" inputmode="tel" autocomplete="tel" placeholder="(00) 00000-0000" data-phone required></label>
-          <label class="field"><span>Distrito</span>
-            <select class="select" name="district" id="districtSelect" required>
-              <option value="">Selecione o seu distrito</option>
-              ${DISTRITOS.map((d) => `<option value="${esc(d)}">${esc(d)}</option>`).join('')}
-            </select>
-            <small class="hint" id="districtHint">Cada distrito tem um único pastor e pode ter vários líderes e equipes.</small>
-          </label>
-          <label class="field" id="churchField" hidden><span>Igreja</span><input class="input" name="church" placeholder="Nome da sua igreja"></label>
-          <button class="btn btn-gold btn-block" style="height:48px">Criar cadastro ${icon('arrowRight')}</button>
-        </form>` : `
-        <form class="auth-form" id="authForm" novalidate>
-          <label class="field"><span>Telefone</span><input class="input" name="phone" inputmode="tel" autocomplete="tel" placeholder="(00) 00000-0000" data-phone required></label>
-          <button class="btn btn-primary btn-block" style="height:48px">Entrar ${icon('arrowRight')}</button>
-        </form>`}
-        <div class="auth-divider">ou</div>
-        <button class="admin-link" data-admin>
+        </div>` : ''}
+        ${authForm(mode)}
+        ${mode === 'entrar' || mode === 'cadastrar' ? `<div class="auth-divider">ou</div>
+        <a class="admin-link" href="#/admin-entrar">
           <span class="ico">${icon('shield')}</span>
           <span><strong>Área do Administrador</strong><small>Acompanhamento geral do Calebe 2027</small></span>
           <span class="chev">${icon('chev', 'style="width:18px;height:18px"')}</span>
-        </button>
-        <p class="notice-free">Acesso sem senha nesta fase do projeto.</p>
-        <div id="storageWarn"></div>
+        </a>` : ''}
       </div>
     </section>
   </div>`;
 
-  checkStorage();
   $$('input[name="mode"]').forEach((r) => r.addEventListener('change', () => { location.hash = `#/${r.value}`; }));
   $$('[data-phone]').forEach(bindPhoneMask);
-  $('[data-admin]').onclick = () => { setSession({ kind: 'admin' }); location.hash = '#/admin/geral'; };
+  bindPasswordToggles();
   if (mode === 'cadastrar') bindDistrictChoice();
 
   $('#authForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const form = Object.fromEntries(new FormData(e.target).entries());
-    const btn = $('button', e.target);
+    const btn = $('button:not([type="button"])', e.target);
     btn.disabled = true;
     try {
-      const user = mode === 'cadastrar'
-        ? await data.register(form)
-        : await data.login(form.phone);
-      setSession({ kind: 'user', user });
-      toast(mode === 'cadastrar' ? 'Cadastro criado com sucesso!' : `Olá, ${firstName(user.name)}!`);
-      location.hash = '#/painel';
+      if (mode === 'cadastrar') {
+        registering = true;
+        const user = await data.register(form);
+        registering = false;
+        setSession({ kind: 'user', user });
+        toast('Cadastro criado com sucesso!');
+        location.hash = '#/painel';
+      } else if (mode === 'recuperar') {
+        const email = await data.resetPassword(form.identifier);
+        toast(`Enviamos o link de recuperação para ${maskEmail(email)}.`);
+        location.hash = '#/entrar';
+      } else if (mode === 'admin') {
+        await data.adminLogin(form.password);
+      } else {
+        await data.login(form.identifier, form.password);
+      }
     } catch (err) {
+      registering = false;
       toast(err.message, 'error');
       btn.disabled = false;
     }
   });
+}
+
+// Mostra só o começo do e-mail (ex.: jo***@gmail.com)
+function maskEmail(email) {
+  const [user, domain] = String(email).split('@');
+  return `${user.slice(0, 2)}***@${domain}`;
+}
+
+function bindPasswordToggles(root = document) {
+  $$('[data-toggle-pw]', root).forEach((b) => (b.onclick = () => {
+    const input = b.previousElementSibling;
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    b.innerHTML = icon(show ? 'eyeOff' : 'eye');
+    b.setAttribute('aria-label', show ? 'Ocultar senha' : 'Mostrar senha');
+  }));
 }
 
 // Na função Pastor, distritos que já têm pastor ficam indisponíveis
@@ -654,99 +800,6 @@ async function bindDistrictChoice() {
   };
   $$('input[name="role"]').forEach((r) => r.addEventListener('change', update));
   update();
-}
-
-function checkStorage() {
-  const box = $('#storageWarn');
-  if (firebaseReady || !box) return;
-  box.innerHTML = `<div class="setup-warn">${icon('alert')}<div><strong>Modo local (teste)</strong>
-    <p>O banco de dados ainda não foi conectado. Os cadastros ficam salvos apenas neste navegador e aparecem só neste aparelho.</p>
-    <button class="btn btn-sm btn-ghost demo-btn" data-demo>${icon('sparkle')}Carregar equipe de demonstração</button>
-    <div id="demoInfo"></div></div></div>`;
-  const showInfo = () => {
-    $('#demoInfo').innerHTML = `<div class="demo-info">
-      <b>Equipe de demonstração carregada.</b> Para ver:
-      <span>Líder: entre com <button type="button" data-fill="${DEMO.leader.phone}">${DEMO.leader.phone}</button></span>
-      <span>Pastor: entre com <button type="button" data-fill="${DEMO.pastor.phone}">${DEMO.pastor.phone}</button></span>
-      <span>Administrador: use o botão "Área do Administrador".</span></div>`;
-    $$('[data-fill]').forEach((b) => (b.onclick = () => {
-      // No modo "Cadastrar" o campo é outro: volta para "Entrar" antes de preencher
-      if ($('#authForm [name="name"]')) { location.hash = '#/entrar'; setTimeout(() => fillPhone(b.dataset.fill), 300); } else fillPhone(b.dataset.fill);
-    }));
-  };
-  data.getUser(DEMO.leader.id).then((u) => { if (u) showInfo(); }).catch(() => {});
-  $('[data-demo]').onclick = async () => {
-    try {
-      await seedDemo();
-      showInfo();
-      toast('Equipe de demonstração carregada!');
-    } catch (err) { toast(err.message, 'error'); }
-  };
-}
-
-function fillPhone(phone) {
-  const input = $('#authForm [name="phone"]');
-  if (input) { input.value = phone; input.focus(); }
-}
-
-const DEMO = {
-  district: 'Parque Piauí',
-  pastor: { id: 'demo-pastor', name: 'Pr. Daniel Araújo', phone: '(86) 98800-1001' },
-  leader: { id: 'demo-lider', name: 'Rafael Monteiro', phone: '(86) 98800-2002', church: 'IASD Parque Piauí' },
-  team: 'demo-equipe',
-};
-
-// Cria pastor, líder e uma equipe completa (somente no modo local, para demonstração)
-async function seedDemo() {
-  const now = new Date().toISOString();
-  const pastorSnap = await getDocs(query(collection(db, USERS), where('district', '==', DEMO.district), where('role', '==', 'pastor')));
-  if (pastorSnap.empty || pastorSnap.docs[0].id === DEMO.pastor.id) {
-    await setDoc(doc(db, USERS, DEMO.pastor.id), {
-      name: DEMO.pastor.name, phone: DEMO.pastor.phone, phoneDigits: onlyDigits(DEMO.pastor.phone),
-      role: 'pastor', church: '', district: DEMO.district, createdAt: now,
-    });
-  }
-  await setDoc(doc(db, USERS, DEMO.leader.id), {
-    name: DEMO.leader.name, phone: DEMO.leader.phone, phoneDigits: onlyDigits(DEMO.leader.phone),
-    role: 'lider', church: DEMO.leader.church, district: DEMO.district, createdAt: now,
-  });
-  const people = [
-    ['Rafael Monteiro', '(86) 98800-2002', 'lider'],
-    ['Beatriz Nogueira', '(86) 99412-3301'], ['Lucas Ferreira', '(86) 99523-4412'],
-    ['Mariana Castro', '(86) 98134-5523'], ['Gabriel Sousa', '(86) 99645-6634'],
-    ['Júlia Alencar', '(86) 98756-7745'], ['Pedro Henrique Lima', '(86) 99867-8856'],
-    ['Larissa Rocha', '(86) 98978-9967'], ['Thiago Barbosa', '(86) 99189-1078'],
-    ['Camila Ribeiro', '(86) 98290-2189'], ['Davi Carvalho', '(86) 99301-3290'],
-  ];
-  await setDoc(doc(db, TEAMS, DEMO.team), {
-    name: 'Equipe Monte Sião',
-    church: DEMO.leader.church,
-    district: DEMO.district,
-    ownerId: DEMO.leader.id,
-    members: people.map(([name, phone, role]) => ({ name, phone, role: role || 'participante' })),
-    responsaveis: {
-      visitacao: 'Beatriz Nogueira', pregador: 'Rafael Monteiro', louvor: 'Júlia Alencar', criancas: 'Mariana Castro',
-      sonoplastia: 'Gabriel Sousa', recepcao: 'Larissa Rocha', midia: 'Lucas Ferreira', apoio: 'Thiago Barbosa',
-      brindes: 'Camila Ribeiro', lanche: 'Pedro Henrique Lima',
-    },
-    treinamentos: {
-      outubro: { done: true, date: '2026-10-04' },
-      novembro: { done: false, date: '' },
-      dezembro: { done: false, date: '' },
-    },
-    local: 'Escola Municipal Professora Maria do Socorro — Rua 12, Quadra 40, Parque Piauí, Teresina - PI (ao lado da praça do bairro).',
-    divulgacao: {
-      faixa: { use: true, date: '2026-10-05' },
-      convites: { use: true, date: '2026-10-18' },
-      carroSom: { use: true, date: '2026-11-07' },
-      redesSociais: { use: true, date: '2026-10-01' },
-    },
-    alvoBatismo: 12,
-    alvoEstudos: 30,
-    acoes: { sopao: '2026-10-03', mutirao: '2026-11-14', feiraSaude: '2027-01-16' },
-    createdAt: now,
-    updatedAt: now,
-  });
 }
 
 function bindPhoneMask(input) {
@@ -1228,7 +1281,7 @@ function groupCount(teams, keyFn, valueFn = () => 1) {
 }
 
 const viewTabs = () => (isAdmin()
-  ? [...VIEW_LINKS, { key: 'relatorios', label: 'Relatórios' }]
+  ? [...VIEW_LINKS, { key: 'usuarios', label: 'Usuários' }, { key: 'relatorios', label: 'Relatórios' }]
   : VIEW_LINKS);
 
 async function renderOverview(tab = 'geral', force = false) {
@@ -1249,7 +1302,6 @@ async function renderOverview(tab = 'geral', force = false) {
         <p class="page-sub">${admin
           ? 'Dados consolidados automaticamente a partir de todas as equipes cadastradas.'
           : 'Dados consolidados automaticamente a partir das equipes do seu distrito.'}</p>
-        ${firebaseReady ? '' : '<span class="badge warn" style="margin-top:10px">Modo local: dados apenas deste navegador</span>'}
       </div>
       <div class="head-actions">
         <button class="btn btn-ghost" data-refresh>${icon('refresh')}Atualizar</button>
@@ -1312,6 +1364,7 @@ function bindAdminBody(tab) {
     el.onkeydown = (e) => { if (e.key === 'Enter') el.click(); };
   });
   if (tab === 'relatorios') bindReports();
+  if (tab === 'usuarios') bindUsers();
 }
 
 function teamCell(t) {
@@ -1902,38 +1955,148 @@ async function exportPdf(kind, teams) {
   pdf.save(fileName(kind, 'pdf'));
 }
 
+// ---------- Minha conta e troca de senha ----------
+
+function changePasswordForm(forced) {
+  return `<form class="auth-form" id="pwForm" novalidate>
+    ${passwordField('current', forced ? 'Senha atual (a que você recebeu)' : 'Senha atual', 'current-password')}
+    ${passwordField('next', 'Nova senha', 'new-password', 'minlength="6" placeholder="Mínimo de 6 caracteres"')}
+    ${passwordField('confirm', 'Confirme a nova senha', 'new-password', 'minlength="6"')}
+    <button class="btn btn-primary btn-block" style="height:48px">${icon('key')}Salvar nova senha</button>
+  </form>`;
+}
+
+function bindChangePassword(onDone) {
+  bindPasswordToggles();
+  $('#pwForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = Object.fromEntries(new FormData(e.target).entries());
+    const btn = $('button:not([type="button"])', e.target);
+    btn.disabled = true;
+    try {
+      await data.changePassword(f.current, f.next, f.confirm);
+      toast('Senha alterada com sucesso!');
+      e.target.reset();
+      onDone();
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
+// Primeiro acesso do administrador: troca obrigatória da senha recebida
+function renderForcedPassword() {
+  app.innerHTML = `<div class="auth">
+    <section class="auth-hero">
+      <img class="auth-logo" src="assets/logo-calebe.png" alt="Missão Calebe">
+      <p class="auth-tag">Sistema de acompanhamento <b>Calebe 2027</b></p>
+    </section>
+    <section class="auth-panel">
+      <div class="auth-card fade-in">
+        <h2>Crie sua nova senha</h2>
+        <p class="lead">Este é o seu primeiro acesso. Por segurança, troque a senha que você recebeu por uma senha só sua.</p>
+        ${changePasswordForm(true)}
+        <button class="auth-link as-button" data-logout-plain>${icon('logout')}Sair</button>
+      </div>
+    </section>
+  </div>`;
+  bindChangePassword(() => { location.hash = isAdmin() ? '#/admin/geral' : '#/painel'; route().finally(setThemeColor); });
+  $('[data-logout-plain]').onclick = () => { location.hash = '#/entrar'; data.logout(); };
+}
+
+function renderAccount() {
+  const u = session.user;
+  const roleLabel = isAdmin() ? 'Administrador' : isPastor() ? 'Pastor' : 'Líder';
+  const rows = isAdmin()
+    ? [['Função', roleLabel], ['Acesso', 'Área do Administrador']]
+    : [['Nome', u.name], ['Função', roleLabel], ['Distrito', u.district], ...(u.church ? [['Igreja', u.church]] : []), ['Telefone', u.phone], ['E-mail', u.email || '—']];
+  app.innerHTML = shell(`
+    <div class="page-head">
+      <div>
+        <div class="eyebrow">Minha conta</div>
+        <h1 class="page-title">${esc(isAdmin() ? 'Administrador' : u.name)}</h1>
+        <p class="page-sub">Seus dados de acesso e a troca de senha.</p>
+      </div>
+    </div>
+    <div class="row-2">
+      ${chartCard('Dados do cadastro', '', `<dl class="detail-list" style="grid-template-columns:1fr">${rows.map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>`)}
+      ${chartCard('Alterar senha', 'Informe a senha atual e escolha uma nova senha.', changePasswordForm(false))}
+    </div>`, 'conta');
+  bindShell();
+  bindChangePassword(() => {});
+}
+
+// ---------- Usuários (administrador) ----------
+
+ADMIN_VIEWS.usuarios = () => {
+  const q = adminQuery.trim().toLowerCase();
+  const users = overview.users
+    .filter((u) => (!adminFilter || u.district === adminFilter)
+      && (!q || [u.name, u.phone, u.email, u.church, u.district].join(' ').toLowerCase().includes(q)))
+    .sort((a, b) => (a.district || '').localeCompare(b.district || '') || (a.role === 'pastor' ? -1 : 1) - (b.role === 'pastor' ? -1 : 1) || a.name.localeCompare(b.name));
+  return `
+    <div class="info-box">${icon('key')}<div><strong>Senhas protegidas</strong>
+      <p>As senhas são guardadas criptografadas pelo Google e ninguém consegue vê-las, nem o administrador. Para ajudar alguém que esqueceu a senha, use <b>Enviar link de senha</b>: a pessoa recebe no e-mail um link para criar uma nova senha. Ela também pode usar "Esqueci minha senha" na tela de entrada.</p></div></div>
+    ${tableCard(`Usuários cadastrados (${users.length})`, 'Pastores e líderes de todos os distritos', `<table class="data">
+      <thead><tr><th>Nome</th><th>Distrito</th><th>Telefone</th><th>E-mail</th><th>Cadastro</th><th>Senha</th></tr></thead>
+      <tbody>${users.length ? users.map((u) => `<tr>
+        <td><div class="t-name"><strong>${esc(u.name)}</strong><small><span class="badge ${u.role === 'pastor' ? 'navy' : 'gold'}">${u.role === 'pastor' ? 'Pastor' : 'Líder'}</span></small></div></td>
+        <td>${esc(u.district || '—')}${u.church ? `<br><small class="muted">${esc(u.church)}</small>` : ''}</td>
+        <td>${u.phoneDigits ? `<a href="https://wa.me/55${esc(u.phoneDigits)}" target="_blank" rel="noopener">${esc(u.phone)}</a>` : esc(u.phone || '—')}</td>
+        <td>${esc(u.email || '—')}</td>
+        <td>${u.createdAt ? fmtDate(u.createdAt.slice(0, 10)) : '—'}</td>
+        <td>${u.email ? `<button class="btn btn-sm btn-ghost" data-reset="${esc(u.email)}">${icon('mail')}Enviar link de senha</button>` : '<span class="muted">Sem e-mail</span>'}</td>
+      </tr>`).join('') : '<tr><td colspan="6"><div class="empty">Nenhum usuário encontrado.</div></td></tr>'}</tbody>
+    </table>`)}`;
+};
+
+function bindUsers() {
+  $$('[data-reset]').forEach((b) => (b.onclick = async () => {
+    const email = b.dataset.reset;
+    const ok = await confirmDialog('Enviar link de senha?', `Será enviado para ${email} um link para criar uma nova senha.`, 'Enviar link');
+    if (!ok) return;
+    b.disabled = true;
+    try {
+      await guard(() => sendPasswordResetEmail(auth, email));
+      toast(`Link enviado para ${email}.`);
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      b.disabled = false;
+    }
+  }));
+}
+
 // ---------- Roteador ----------
 
-let sessionChecked = false;
+let authReady = false;   // primeira resposta do Firebase sobre o login
+let registering = false; // durante o cadastro a conta existe antes dos dados
+
+const AUTH_PAGES = ['entrar', 'cadastrar', 'recuperar', 'admin-entrar'];
 
 async function route() {
+  if (!authReady) return;
   const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
   const [page, a, b] = parts;
   tip.hidden = true;
 
   if (!session) {
-    return renderAuth(page === 'cadastrar' ? 'cadastrar' : 'entrar');
+    return renderAuth(page === 'admin-entrar' ? 'admin' : AUTH_PAGES.includes(page) ? page : 'entrar');
   }
-  if (page === 'entrar' || page === 'cadastrar') {
-    setSession(null);
-    return renderAuth(page);
+  if (session.user.mustChangePassword) return renderForcedPassword();
+  if (AUTH_PAGES.includes(page) || !page) {
+    location.hash = isAdmin() ? '#/admin/geral' : '#/painel';
+    return;
   }
 
   try {
+    if (page === 'conta') return renderAccount();
     if (session.kind === 'admin') {
       if (page !== 'admin') { location.hash = '#/admin/geral'; return; }
       if (a === 'equipe' && b) return await renderTeamDetail(b);
       return await renderOverview(a || 'geral', true);
-    }
-    if (!sessionChecked) {
-      const fresh = await data.getUser(session.user.id);
-      if (!fresh) {
-        setSession(null);
-        toast('Cadastro não encontrado. Entre novamente.', 'error');
-        return renderAuth('entrar');
-      }
-      setSession({ kind: 'user', user: fresh });
-      sessionChecked = true;
     }
     if (page === 'equipe' && a) return await renderTeam(a, b);
     if (page === 'distrito') {
@@ -1954,6 +2117,24 @@ async function route() {
   }
 }
 
+// Carrega o cadastro de quem entrou
+async function loadSession(fbUser) {
+  if (!fbUser) { setSession(null); return; }
+  let user = await data.getUser(fbUser.uid).catch(() => null);
+  if (!user && fbUser.email === ADMIN_EMAIL) {
+    user = { name: 'Administrador', role: 'admin', email: ADMIN_EMAIL, mustChangePassword: false, createdAt: new Date().toISOString() };
+    await setDoc(doc(db, USERS, fbUser.uid), user).catch(() => {});
+    user = { id: fbUser.uid, ...user };
+  }
+  if (!user) {
+    setSession(null);
+    toast('Cadastro não encontrado. Faça seu cadastro novamente.', 'error');
+    await signOut(auth);
+    return;
+  }
+  setSession({ kind: user.role === 'admin' ? 'admin' : 'user', user });
+}
+
 // Cor da barra de status: laranja no login, marrom dentro do sistema
 function setThemeColor() {
   const meta = document.querySelector('meta[name="theme-color"]');
@@ -1968,13 +2149,9 @@ if ('serviceWorker' in navigator) {
 }
 app.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
 
-// Modo local: carrega a equipe de demonstração automaticamente na primeira abertura
-async function autoDemo() {
-  if (firebaseReady || store.get('calebe.demoSeeded')) return;
-  try {
-    if (!(await data.getUser(DEMO.leader.id))) await seedDemo();
-    store.set('calebe.demoSeeded', true);
-  } catch { /* segue sem a demonstração */ }
-}
-
-autoDemo().finally(() => route().finally(setThemeColor));
+onAuthStateChanged(auth, async (fbUser) => {
+  if (registering) return;
+  await loadSession(fbUser);
+  authReady = true;
+  route().finally(setThemeColor);
+});

@@ -17,25 +17,22 @@ firebase.json           Configuração do Firebase
 vercel.json             Configuração do Vercel
 ```
 
-## Configurar o Firebase (uma vez)
+## Firebase
 
-O projeto já está ligado ao Firebase **calebempi** (`js/firebase-config.js`). Falta apenas publicar as regras do Firestore (passo 3).
+O projeto usa o Firebase **calebempi** (`js/firebase-config.js`):
 
+- **Authentication** (e-mail e senha): login de pastores, líderes e do administrador. As senhas ficam criptografadas pelo Google; ninguém consegue vê-las.
+- **Firestore**: cadastros e equipes. As regras estão em `firestore.rules` e precisam ser publicadas em *Firestore Database → Regras* sempre que mudarem.
 
-1. Em https://console.firebase.google.com crie o projeto (ex.: `calebe-2027`).
-2. **Firestore Database → Criar banco de dados** (modo produção, região `southamerica-east1`).
-3. **Firestore → Regras**: cole o conteúdo de `firestore.rules` e publique.
-4. **Configurações do projeto → Seus apps → Web (`</>`)**: registre o app e copie o `firebaseConfig`.
-5. Cole esses valores em `js/firebase-config.js`.
-
-Enquanto o arquivo não for preenchido, o site funciona em **modo local**: os dados ficam salvos apenas no navegador de quem está usando (útil para testar). Depois de preencher, o site passa a usar o Firestore automaticamente.
-
-**Equipe de demonstração (modo local):** na tela de entrada, o botão "Carregar equipe de demonstração" cria a *Equipe Monte Sião* (distrito Parque Piauí) com líder, 10 participantes, responsáveis, treinamento, divulgação e ações. Entre como líder com (86) 98800-2002, como pastor com (86) 98800-1001 ou pela Área do Administrador. O botão não aparece quando o Firebase está conectado.
+Coleções: `calebe_usuarios` (cadastros), `calebe_equipes` (equipes), `calebe_logins` (telefone → e-mail, para entrar com o telefone) e `calebe_pastores` (um documento por distrito, garante um único pastor).
 
 ## Funcionalidades
 
-**Acesso e permissões (sem senha nesta fase)**
-- Pastor ou líder cria o cadastro e entra informando o telefone. O **pastor** informa nome, telefone e distrito (ele é o líder geral do distrito, sem igreja). O **líder** informa também a sua igreja.
+**Acesso e permissões**
+- Pastor ou líder cria o próprio cadastro com **e-mail e senha** e entra com o telefone (ou e-mail) e a senha. "Esqueci minha senha" envia um link de redefinição para o e-mail.
+- Todos podem trocar a senha em **Minha conta**.
+- O **administrador** entra pela "Área do Administrador" com a senha recebida e é obrigado a trocá-la no primeiro acesso.
+- Na aba **Usuários**, o administrador vê todos os cadastrados (telefone com link para WhatsApp e e-mail) e pode **enviar o link de redefinição de senha** para quem esqueceu. O **pastor** informa nome, telefone e distrito (ele é o líder geral do distrito, sem igreja). O **líder** informa também a sua igreja.
 - No painel, o pastor vê todos os líderes do distrito, com igreja, telefone e equipes de cada um.
 - 24 distritos fixos. **Cada distrito tem um único pastor** e pode ter vários líderes e várias equipes.
 - **Pastor e líder veem apenas o próprio distrito** (Calebes inscritos, alvos, equipes e todas as abas de acompanhamento).
@@ -64,4 +61,3 @@ As alterações são salvas automaticamente. O progresso de cada etapa aparece e
 - **Relatórios**: lista completa de participantes (com a função de cada um) e equipes com seus líderes, em **Excel e PDF**, além de uma planilha completa com as abas Distritos, Equipes, Participantes e Etapas. Resumo por distrito com o pastor de cada um.
 - Filtro por distrito e busca (os relatórios seguem o filtro).
 
-> Observação: como o acesso é sem senha, as regras do Firestore permitem leitura e escrita nas coleções do Calebe e a Área do Administrador fica aberta a quem acessar o site. Antes de divulgar amplamente, adicione autenticação.
